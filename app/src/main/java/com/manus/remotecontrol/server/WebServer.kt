@@ -13,6 +13,7 @@ import io.ktor.websocket.*
 import io.ktor.http.*
 import io.ktor.server.response.*
 import io.ktor.server.http.content.*
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.channels.consumeEach
 import kotlinx.coroutines.flow.collectLatest
 import org.json.JSONObject
@@ -52,7 +53,7 @@ class WebServer(
                         }
                         
                         // Start streaming video to this client
-                        val videoJob = kotlinx.coroutines.launch {
+                        val videoJob = launch {
                             remoteControlService.jpegFlow.collectLatest { jpegBytes ->
                                 send(Frame.Binary(true, jpegBytes))
                             }
