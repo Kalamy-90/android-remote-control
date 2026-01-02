@@ -148,7 +148,7 @@
             <select id="quality" onchange="changeQuality()">
                 <option value="low">Fluide (Basse Résolution)</option>
                 <option value="medium" selected>Équilibré (Moyenne)</option>
-                <option value="high">Haute Qualité (HD)</option>
+                <option value="high">Haute Qualité (Full HD)</option>
             </select>
         </div>
 
@@ -257,18 +257,18 @@
 
         function changeQuality() {
             const quality = document.getElementById('quality').value;
-            let scale = 2; // Default to 1/2 (High Quality/Balanced thanks to WebP)
+            let scale = 2; // Default to 1/2 (Balanced)
             let jpegQuality = 50;
 
             if (quality === 'low') {
                 scale = 4; // 1/4 Resolution
                 jpegQuality = 40;
             } else if (quality === 'medium') {
-                scale = 2; // 1/2 Resolution (Boosted!)
+                scale = 2; // 1/2 Resolution
                 jpegQuality = 50;
             } else if (quality === 'high') {
-                scale = 2; // 1/2 Resolution
-                jpegQuality = 80; // High Quality Compression
+                scale = 1; // 1/1 Resolution (Native Full HD)
+                jpegQuality = 70; // Good quality, but not too heavy for Full HD
             }
 
             if (ws && ws.readyState === WebSocket.OPEN) {
