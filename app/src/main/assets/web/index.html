@@ -257,18 +257,18 @@
 
         function changeQuality() {
             const quality = document.getElementById('quality').value;
-            let scale = 3;
+            let scale = 2; // Default to 1/2 (High Quality/Balanced thanks to WebP)
             let jpegQuality = 50;
 
             if (quality === 'low') {
-                scale = 4;
+                scale = 4; // 1/4 Resolution
                 jpegQuality = 40;
             } else if (quality === 'medium') {
-                scale = 3;
+                scale = 2; // 1/2 Resolution (Boosted!)
                 jpegQuality = 50;
             } else if (quality === 'high') {
-                scale = 2;
-                jpegQuality = 65;
+                scale = 2; // 1/2 Resolution
+                jpegQuality = 80; // High Quality Compression
             }
 
             if (ws && ws.readyState === WebSocket.OPEN) {
