@@ -39,18 +39,15 @@ class WebServer(
             install(WebSockets)
             
             routing {
-                // Serve index.html manually from assets to ensure it works on Android
                 get("/") {
                     try {
                         val indexContent = this@WebServer.context.assets.open("web/index.html").bufferedReader().use { it.readText() }
                         call.respondText(indexContent, ContentType.Text.Html)
                     } catch (e: Exception) {
                         call.respondText("Error loading UI: ${e.message}", ContentType.Text.Plain)
-                        Log.e("WebServer", "Error serving index.html", e)
                     }
                 }
                 
-                // Serve jmuxer.min.js
                 get("/jmuxer.min.js") {
                     try {
                         val jsContent = this@WebServer.context.assets.open("web/jmuxer.min.js").bufferedReader().use { it.readText() }
@@ -60,10 +57,8 @@ class WebServer(
                     }
                 }
 
-                // WebSocket for control and streaming
                 webSocket("/control") {
                     try {
-                        // Auth check
                         val authFrame = incoming.receive() as? Frame.Text ?: return@webSocket
                         val authJson = JSONObject(authFrame.readText())
                         if (authJson.optString("pin") != pinCode) {
@@ -71,27 +66,44 @@ class WebServer(
                             return@webSocket
                         }
                         
-                        // Start streaming H.264 video to this client
-                        // Use conflate() to drop old frames if the client is slow
+                        // Launch two parallel jobs for streaming
+                        // The client will only receive data from the active flow (Photo or Video)
+                        
+                        val photoJob = launch {
+                            remoteControlService.imageFlow
+                                .conflate()
+                                .collect { bytes ->
+                                    try {
+                                        // Prefix with 0x01 for Photo
+                                        val packet = ByteArray(bytes.size + 1)
+                                        packet[0] = 0x01
+                                        System.arraycopy(bytes, 0, packet, 1, bytes.size)
+                                        send(Frame.Binary(true, packet))
+                                    } catch (e: Exception) {}
+                                }
+                        }
+                        
                         val videoJob = launch {
                             remoteControlService.h264Flow
-                                .conflate() // Drop intermediate values if collector is slow
-                                .collect { h264Bytes ->
+                                .conflate()
+                                .collect { bytes ->
                                     try {
-                                        send(Frame.Binary(true, h264Bytes))
-                                    } catch (e: Exception) {
-                                        // Ignore send errors (client might have disconnected)
-                                    }
+                                        // Prefix with 0x02 for Video
+                                        val packet = ByteArray(bytes.size + 1)
+                                        packet[0] = 0x02
+                                        System.arraycopy(bytes, 0, packet, 1, bytes.size)
+                                        send(Frame.Binary(true, packet))
+                                    } catch (e: Exception) {}
                                 }
                         }
 
-                        // Handle incoming control commands
                         incoming.consumeEach { frame ->
                             if (frame is Frame.Text) {
                                 handleCommand(frame.readText())
                             }
                         }
                         
+                        photoJob.cancel()
                         videoJob.cancel()
                     } catch (e: Exception) {
                         Log.e("WebServer", "WebSocket error", e)
@@ -102,14 +114,12 @@ class WebServer(
         
         server?.start(wait = false)
         isRunning.set(true)
-        Log.d("WebServer", "Server started on port $port")
     }
 
     fun stop() {
         server?.stop(1000, 2000)
         server = null
         isRunning.set(false)
-        Log.d("WebServer", "Server stopped")
     }
 
     private fun handleCommand(jsonStr: String) {
@@ -117,56 +127,51 @@ class WebServer(
             val json = JSONObject(jsonStr)
             val type = json.optString("type")
             
-            // Handle quality update command first (doesn't need AccessibilityService)
-            if (type == "quality") {
-                val scale = json.optDouble("scale", 2.0).toFloat()
-                val quality = json.optInt("quality", 50) // Now represents bitrate factor
-                remoteControlService.updateQuality(scale, quality)
-                return
-            }
-
-            val service = AccessibilityInputService.instance ?: return
-
-            // Get screen dimensions for relative coordinate conversion
-            val windowManager = context.getSystemService(Context.WINDOW_SERVICE) as WindowManager
-            val metrics = DisplayMetrics()
-            windowManager.defaultDisplay.getRealMetrics(metrics)
-            val screenWidth = metrics.widthPixels
-            val screenHeight = metrics.heightPixels
-
             when (type) {
-                "tap" -> {
-                    // Coordinates are now relative (0.0 - 1.0)
-                    val relX = json.optDouble("x").toFloat()
-                    val relY = json.optDouble("y").toFloat()
-                    
-                    // Convert to absolute coordinates
-                    val absX = relX * screenWidth
-                    val absY = relY * screenHeight
-                    
-                    service.performTap(absX, absY)
+                "mode" -> {
+                    val mode = json.optString("value", "photo")
+                    remoteControlService.setMode(mode)
                 }
-                "swipe" -> {
-                    // Coordinates are now relative (0.0 - 1.0)
-                    val relX1 = json.optDouble("x1").toFloat()
-                    val relY1 = json.optDouble("y1").toFloat()
-                    val relX2 = json.optDouble("x2").toFloat()
-                    val relY2 = json.optDouble("y2").toFloat()
-                    
-                    // Convert to absolute coordinates
-                    val absX1 = relX1 * screenWidth
-                    val absY1 = relY1 * screenHeight
-                    val absX2 = relX2 * screenWidth
-                    val absY2 = relY2 * screenHeight
-                    
-                    val duration = json.optLong("duration", 300)
-                    service.performSwipe(absX1, absY1, absX2, absY2, duration)
+                "photo_settings" -> {
+                    val scale = json.optDouble("scale", 2.0).toFloat()
+                    val quality = json.optInt("quality", 50)
+                    remoteControlService.updatePhotoSettings(scale, quality)
                 }
-                "key" -> {
-                    when (json.optString("code")) {
-                        "BACK" -> service.performGlobalActionBack()
-                        "HOME" -> service.performGlobalActionHome()
-                        "RECENTS" -> service.performGlobalActionRecents()
+                "video_settings" -> {
+                    val bitrate = json.optInt("bitrate", 2000000)
+                    val fps = json.optInt("fps", 30)
+                    remoteControlService.updateVideoSettings(bitrate, fps)
+                }
+                else -> {
+                    // Input events
+                    val service = AccessibilityInputService.instance ?: return
+                    val windowManager = context.getSystemService(Context.WINDOW_SERVICE) as WindowManager
+                    val metrics = DisplayMetrics()
+                    windowManager.defaultDisplay.getRealMetrics(metrics)
+                    val screenWidth = metrics.widthPixels
+                    val screenHeight = metrics.heightPixels
+
+                    when (type) {
+                        "tap" -> {
+                            val relX = json.optDouble("x").toFloat()
+                            val relY = json.optDouble("y").toFloat()
+                            service.performTap(relX * screenWidth, relY * screenHeight)
+                        }
+                        "swipe" -> {
+                            val relX1 = json.optDouble("x1").toFloat()
+                            val relY1 = json.optDouble("y1").toFloat()
+                            val relX2 = json.optDouble("x2").toFloat()
+                            val relY2 = json.optDouble("y2").toFloat()
+                            val duration = json.optLong("duration", 300)
+                            service.performSwipe(relX1 * screenWidth, relY1 * screenHeight, relX2 * screenWidth, relY2 * screenHeight, duration)
+                        }
+                        "key" -> {
+                            when (json.optString("code")) {
+                                "BACK" -> service.performGlobalActionBack()
+                                "HOME" -> service.performGlobalActionHome()
+                                "RECENTS" -> service.performGlobalActionRecents()
+                            }
+                        }
                     }
                 }
             }

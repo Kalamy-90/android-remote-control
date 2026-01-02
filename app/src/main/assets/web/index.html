@@ -51,7 +51,7 @@
         }
         #screen-container {
             position: relative;
-            margin-top: 20px;
+            margin-top: 10px;
             border: 2px solid #333;
             max-height: 80vh;
             overflow: hidden;
@@ -60,17 +60,19 @@
             align-items: center;
             background-color: #000;
         }
-        /* Video element instead of img */
-        #remote-video {
+        #remote-image, #remote-video {
             max-height: 80vh;
             display: block;
             max-width: 100%;
             object-fit: contain;
         }
+        #remote-video {
+            display: none; /* Hidden by default */
+        }
         .nav-bar {
             display: flex;
             gap: 20px;
-            margin-top: 20px;
+            margin-top: 10px;
             padding: 10px;
             background-color: #1e1e1e;
             border-radius: 10px;
@@ -96,11 +98,35 @@
             z-index: 10;
         }
         
-        #quality-selector {
+        #settings-panel {
             margin-top: 10px;
             display: flex;
-            gap: 10px;
+            gap: 15px;
             align-items: center;
+            background-color: #1e1e1e;
+            padding: 10px;
+            border-radius: 8px;
+        }
+        
+        .mode-switch {
+            display: flex;
+            background-color: #333;
+            border-radius: 5px;
+            overflow: hidden;
+        }
+        
+        .mode-btn {
+            padding: 5px 15px;
+            background-color: transparent;
+            border: none;
+            color: #888;
+            cursor: pointer;
+            font-size: 14px;
+        }
+        
+        .mode-btn.active {
+            background-color: #009688;
+            color: white;
         }
         
         select {
@@ -124,6 +150,7 @@
             background-color: black;
         }
         
+        #screen-container:fullscreen #remote-image,
         #screen-container:fullscreen #remote-video {
             max-height: 100vh;
             max-width: 100vw;
@@ -145,17 +172,36 @@
     </div>
 
     <div id="control-screen">
-        <div id="quality-selector">
-            <label for="quality">Qualité:</label>
-            <select id="quality" onchange="changeQuality()">
-                <option value="low">Fluide (Basse Résolution)</option>
-                <option value="medium" selected>Équilibré (Optimisé)</option>
-                <option value="high">Haute Qualité (Full HD)</option>
-            </select>
+        <div id="settings-panel">
+            <div class="mode-switch">
+                <button id="btn-mode-photo" class="mode-btn active" onclick="setMode('photo')">Photo</button>
+                <button id="btn-mode-video" class="mode-btn" onclick="setMode('video')">Vidéo</button>
+            </div>
+            
+            <div id="photo-settings">
+                <select id="photo-quality" onchange="updatePhotoSettings()">
+                    <option value="low">Fluide (1/4)</option>
+                    <option value="medium" selected>Équilibré (1/2.5)</option>
+                    <option value="high">Haute Qualité (1/1)</option>
+                </select>
+            </div>
+            
+            <div id="video-settings" style="display: none;">
+                <select id="video-quality" onchange="updateVideoSettings()">
+                    <option value="low">Bas (1 Mbps)</option>
+                    <option value="medium" selected>Moyen (2.5 Mbps)</option>
+                    <option value="high">Élevé (5 Mbps)</option>
+                </select>
+                <select id="video-fps" onchange="updateVideoSettings()">
+                    <option value="30" selected>30 FPS</option>
+                    <option value="60">60 FPS</option>
+                </select>
+            </div>
         </div>
 
         <div id="screen-container">
             <button id="fullscreen-btn" onclick="toggleFullscreen()">⛶</button>
+            <img id="remote-image" src="" alt="Écran distant">
             <video id="remote-video" autoplay muted playsinline></video>
         </div>
 
@@ -169,6 +215,9 @@
     <script>
         let ws;
         let jmuxer;
+        let currentMode = 'photo';
+        
+        const imgEl = document.getElementById('remote-image');
         const videoEl = document.getElementById('remote-video');
         const screenContainer = document.getElementById('screen-container');
 
@@ -192,25 +241,21 @@
             log("Tentative de connexion...");
 
             // Initialize JMuxer
-            if (jmuxer) {
-                jmuxer.destroy();
-            }
-            
+            if (jmuxer) jmuxer.destroy();
             jmuxer = new JMuxer({
                 node: 'remote-video',
                 mode: 'video',
-                flushingTime: 0, // Instant playback
+                flushingTime: 0,
                 fps: 30,
                 debug: false
             });
 
             const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
             const wsUrl = `${protocol}//${window.location.host}/control`;
-            log(`Connecting to ${wsUrl}`);
             
             try {
                 ws = new WebSocket(wsUrl);
-                ws.binaryType = 'arraybuffer'; // Important for JMuxer
+                ws.binaryType = 'arraybuffer';
             } catch (e) {
                 log(`Erreur création WebSocket: ${e.message}`);
                 resetUI();
@@ -220,10 +265,11 @@
             ws.onopen = () => {
                 log("WebSocket ouvert, envoi du PIN...");
                 ws.send(JSON.stringify({ pin: pin }));
+                // Send initial settings
+                updatePhotoSettings();
             };
 
             ws.onerror = (error) => {
-                log("Erreur WebSocket (voir console)");
                 console.error(error);
                 document.getElementById('error-msg').innerText = "Erreur réseau WebSocket";
                 document.getElementById('error-msg').style.display = 'block';
@@ -234,24 +280,35 @@
                 if (typeof event.data === 'string') {
                     log(`Message reçu: ${event.data}`);
                 } else {
-                    // Binary data = H.264 NAL units
+                    // Binary data
                     const data = new Uint8Array(event.data);
+                    const type = data[0]; // 0x01 = Photo, 0x02 = Video
+                    const payload = data.subarray(1);
                     
-                    jmuxer.feed({
-                        video: data
-                    });
-                    
-                    if (document.getElementById('login-screen').style.display !== 'none') {
-                        log("Premier frame vidéo reçu, affichage écran");
-                        document.getElementById('login-screen').style.display = 'none';
-                        document.getElementById('control-screen').style.display = 'flex';
+                    if (type === 0x01) { // Photo
+                        if (currentMode !== 'photo') return;
+                        const blob = new Blob([payload], { type: 'image/webp' });
+                        const url = URL.createObjectURL(blob);
+                        imgEl.onload = () => URL.revokeObjectURL(url);
+                        imgEl.src = url;
+                        
+                        if (document.getElementById('login-screen').style.display !== 'none') {
+                            showControlScreen();
+                        }
+                    } else if (type === 0x02) { // Video
+                        if (currentMode !== 'video') return;
+                        jmuxer.feed({ video: payload });
+                        
+                        if (document.getElementById('login-screen').style.display !== 'none') {
+                            showControlScreen();
+                        }
                     }
                 }
             };
 
             ws.onclose = (event) => {
-                log(`WebSocket fermé: code=${event.code}, reason=${event.reason}`);
-                if (event.code === 1008) { // Policy Violation (Wrong PIN)
+                log(`WebSocket fermé: code=${event.code}`);
+                if (event.code === 1008) {
                     document.getElementById('error-msg').innerText = "PIN Incorrect";
                     document.getElementById('error-msg').style.display = 'block';
                 } else if (document.getElementById('control-screen').style.display === 'flex') {
@@ -261,10 +318,76 @@
                 resetUI();
             };
         }
+        
+        function showControlScreen() {
+            document.getElementById('login-screen').style.display = 'none';
+            document.getElementById('control-screen').style.display = 'flex';
+        }
 
         function resetUI() {
             document.getElementById('btn-connect').disabled = false;
             document.getElementById('status-msg').style.display = 'none';
+        }
+
+        function setMode(mode) {
+            currentMode = mode;
+            
+            // Update UI buttons
+            document.getElementById('btn-mode-photo').className = mode === 'photo' ? 'mode-btn active' : 'mode-btn';
+            document.getElementById('btn-mode-video').className = mode === 'video' ? 'mode-btn active' : 'mode-btn';
+            
+            // Show/Hide settings
+            document.getElementById('photo-settings').style.display = mode === 'photo' ? 'block' : 'none';
+            document.getElementById('video-settings').style.display = mode === 'video' ? 'block' : 'none';
+            
+            // Show/Hide elements
+            imgEl.style.display = mode === 'photo' ? 'block' : 'none';
+            videoEl.style.display = mode === 'video' ? 'block' : 'none';
+            
+            // Send command to server
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({ type: 'mode', value: mode }));
+                
+                // Apply current settings for the new mode
+                if (mode === 'photo') updatePhotoSettings();
+                else updateVideoSettings();
+            }
+        }
+
+        function updatePhotoSettings() {
+            const quality = document.getElementById('photo-quality').value;
+            let scale = 2.5;
+            let q = 50;
+
+            if (quality === 'low') { scale = 4.0; q = 40; }
+            else if (quality === 'medium') { scale = 2.5; q = 50; }
+            else if (quality === 'high') { scale = 1.0; q = 70; }
+
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({
+                    type: 'photo_settings',
+                    scale: scale,
+                    quality: q
+                }));
+            }
+        }
+        
+        function updateVideoSettings() {
+            const q = document.getElementById('video-quality').value;
+            const fps = parseInt(document.getElementById('video-fps').value);
+            let bitrate = 2500000;
+
+            if (q === 'low') bitrate = 1000000;
+            else if (q === 'medium') bitrate = 2500000;
+            else if (q === 'high') bitrate = 5000000;
+
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({
+                    type: 'video_settings',
+                    bitrate: bitrate,
+                    fps: fps
+                }));
+            }
         }
 
         function sendKey(code) {
@@ -272,149 +395,74 @@
                 ws.send(JSON.stringify({ type: 'key', code: code }));
             }
         }
-
-        function changeQuality() {
-            const quality = document.getElementById('quality').value;
-            let scale = 2.0; 
-            let bitrateFactor = 50; // Maps to 2.5 Mbps
-
-            if (quality === 'low') {
-                scale = 3.0; // 1/3 Resolution
-                bitrateFactor = 20; // 1 Mbps
-            } else if (quality === 'medium') {
-                scale = 2.0; // 1/2 Resolution
-                bitrateFactor = 50; // 2.5 Mbps
-            } else if (quality === 'high') {
-                scale = 1.0; // 1/1 Resolution (Native Full HD)
-                bitrateFactor = 100; // 5 Mbps
-            }
-
-            if (ws && ws.readyState === WebSocket.OPEN) {
-                ws.send(JSON.stringify({
-                    type: 'quality',
-                    scale: scale,
-                    quality: bitrateFactor
-                }));
-                log(`Changement qualité: ${quality} (1/${scale}, Bitrate Factor ${bitrateFactor})`);
-            }
-        }
-
+        
         function toggleFullscreen() {
             if (!document.fullscreenElement) {
-                screenContainer.requestFullscreen().catch(err => {
-                    alert(`Error attempting to enable full-screen mode: ${err.message} (${err.name})`);
-                });
+                screenContainer.requestFullscreen().catch(err => console.error(err));
             } else {
                 document.exitFullscreen();
             }
         }
         
-        // Listen for fullscreen change events to reset styles properly
-        document.addEventListener('fullscreenchange', (event) => {
-            if (!document.fullscreenElement) {
-                // Exiting fullscreen - reset styles
-                videoEl.style.maxHeight = "80vh";
-                videoEl.style.width = "auto";
-                videoEl.style.height = "auto";
-                screenContainer.style.width = "";
-                screenContainer.style.height = "";
-                screenContainer.style.margin = "20px 0 0 0";
-                screenContainer.style.border = "2px solid #333";
-            } else {
-                // Entering fullscreen is handled by CSS :fullscreen pseudo-class
+        // Input Handling (Unified for both elements)
+        function attachInputListeners(element) {
+            let startX, startY;
+
+            function handleStart(x, y) {
+                startX = x;
+                startY = y;
             }
-        });
 
-        // --- Touch & Mouse Event Handling ---
+            function handleEnd(x, y) {
+                if (startX === null || startY === null) return;
+                
+                const rect = element.getBoundingClientRect();
+                
+                // Check if click is within the actual image/video rect
+                if (x < rect.left || x > rect.right || y < rect.top || y > rect.bottom) return;
 
-        let startX, startY;
-        let isDragging = false;
+                const diffX = Math.abs(x - startX);
+                const diffY = Math.abs(y - startY);
 
-        function handleStart(x, y) {
-            startX = x;
-            startY = y;
-            isDragging = false;
-        }
-
-        function handleEnd(x, y) {
-            if (startX === null || startY === null) return;
-
-            const diffX = Math.abs(x - startX);
-            const diffY = Math.abs(y - startY);
-            const rect = videoEl.getBoundingClientRect();
-
-            // Calculate relative coordinates based on the displayed image size
-            // This works even if the image is centered with black bars
-            
-            // IMPORTANT: We must use the image's rect, not the container's
-            // But we need to make sure the click was actually ON the image
-            if (x < rect.left || x > rect.right || y < rect.top || y > rect.bottom) {
-                // Clicked outside the image (on the black bars)
+                if (diffX > 10 || diffY > 10) {
+                    // Swipe
+                    const x1 = (startX - rect.left) / rect.width;
+                    const y1 = (startY - rect.top) / rect.height;
+                    const x2 = (x - rect.left) / rect.width;
+                    const y2 = (y - rect.top) / rect.height;
+                    
+                    if (ws && ws.readyState === WebSocket.OPEN) {
+                        ws.send(JSON.stringify({ type: 'swipe', x1, y1, x2, y2, duration: 300 }));
+                    }
+                } else {
+                    // Tap
+                    const tapX = (x - rect.left) / rect.width;
+                    const tapY = (y - rect.top) / rect.height;
+                    
+                    if (ws && ws.readyState === WebSocket.OPEN) {
+                        ws.send(JSON.stringify({ type: 'tap', x: tapX, y: tapY }));
+                    }
+                }
                 startX = null;
                 startY = null;
-                return;
             }
 
-            if (diffX > 10 || diffY > 10) {
-                // Swipe
-                const x1 = (startX - rect.left) / rect.width;
-                const y1 = (startY - rect.top) / rect.height;
-                const x2 = (x - rect.left) / rect.width;
-                const y2 = (y - rect.top) / rect.height;
-
-                if (ws && ws.readyState === WebSocket.OPEN) {
-                    ws.send(JSON.stringify({
-                        type: 'swipe',
-                        x1: x1,
-                        y1: y1,
-                        x2: x2,
-                        y2: y2,
-                        duration: 300
-                    }));
-                }
-            } else {
-                // Tap
-                const tapX = (x - rect.left) / rect.width;
-                const tapY = (y - rect.top) / rect.height;
-
-                if (ws && ws.readyState === WebSocket.OPEN) {
-                    ws.send(JSON.stringify({
-                        type: 'tap',
-                        x: tapX,
-                        y: tapY
-                    }));
-                }
-            }
-
-            startX = null;
-            startY = null;
+            element.addEventListener('mousedown', e => { e.preventDefault(); handleStart(e.clientX, e.clientY); });
+            element.addEventListener('mouseup', e => { e.preventDefault(); handleEnd(e.clientX, e.clientY); });
+            
+            element.addEventListener('touchstart', e => {
+                e.preventDefault();
+                if (e.touches.length > 0) handleStart(e.touches[0].clientX, e.touches[0].clientY);
+            }, { passive: false });
+            
+            element.addEventListener('touchend', e => {
+                e.preventDefault();
+                if (e.changedTouches.length > 0) handleEnd(e.changedTouches[0].clientX, e.changedTouches[0].clientY);
+            }, { passive: false });
         }
-
-        // Mouse Events
-        videoEl.addEventListener('mousedown', (e) => {
-            e.preventDefault();
-            handleStart(e.clientX, e.clientY);
-        });
-
-        videoEl.addEventListener('mouseup', (e) => {
-            e.preventDefault();
-            handleEnd(e.clientX, e.clientY);
-        });
-
-        // Touch Events (for iPad/Mobile)
-        videoEl.addEventListener('touchstart', (e) => {
-            e.preventDefault(); // Prevent scrolling
-            if (e.touches.length > 0) {
-                handleStart(e.touches[0].clientX, e.touches[0].clientY);
-            }
-        }, { passive: false });
-
-        videoEl.addEventListener('touchend', (e) => {
-            e.preventDefault();
-            if (e.changedTouches.length > 0) {
-                handleEnd(e.changedTouches[0].clientX, e.changedTouches[0].clientY);
-            }
-        }, { passive: false });
+        
+        attachInputListeners(imgEl);
+        attachInputListeners(videoEl);
 
     </script>
 </body>

@@ -56,23 +56,44 @@ class RemoteControlService : Service() {
 
     private var mediaProjection: MediaProjection? = null
     private var virtualDisplay: VirtualDisplay? = null
+    
+    // Photo Mode Components
+    private var imageReader: ImageReader? = null
+    private var reusableBitmap: Bitmap? = null
+    
+    // Video Mode Components
     private var mediaCodec: MediaCodec? = null
     private var inputSurface: Surface? = null
+    
     private var webServer: WebServer? = null
     
     private val serviceScope = CoroutineScope(Dispatchers.Default + Job())
     
-    // Flow for H.264 NAL units
+    // Flow for Photo Mode (JPEG/WebP)
+    private val _imageFlow = MutableSharedFlow<ByteArray>(replay = 0)
+    val imageFlow = _imageFlow.asSharedFlow()
+    
+    // Flow for Video Mode (H.264)
     private val _h264Flow = MutableSharedFlow<ByteArray>(replay = 0)
     val h264Flow = _h264Flow.asSharedFlow()
 
-    // Default settings
-    private var currentScale = 2.0f // Default 1/2 scale
-    private var currentBitrate = 2000000 // 2 Mbps default
+    // Settings
+    enum class Mode { PHOTO, VIDEO }
+    private var currentMode = Mode.PHOTO
+    
+    // Photo Settings
+    private var photoScale = 2.0f
+    private var photoQuality = 50
+    
+    // Video Settings
+    private var videoBitrate = 2000000 // 2 Mbps
+    private var videoFps = 30
+    
     private var savedResultCode: Int = 0
     private var savedResultData: Intent? = null
     
     private var isEncoderRunning = false
+    private var isImageReaderRunning = false
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -80,7 +101,7 @@ class RemoteControlService : Service() {
         when (intent?.action) {
             ACTION_START -> {
                 AppLogger.log("RemoteControlService", "Starting service...")
-                startForegroundService() // Start foreground FIRST
+                startForegroundService()
                 
                 val resultCode = intent.getIntExtra(EXTRA_RESULT_CODE, 0)
                 val resultData = intent.getParcelableExtra<Intent>(EXTRA_RESULT_DATA)
@@ -88,6 +109,7 @@ class RemoteControlService : Service() {
                     savedResultCode = resultCode
                     savedResultData = resultData
                     try {
+                        // Start in Photo mode by default
                         startProjection(resultCode, resultData)
                         startServer()
                         isRunning = true
@@ -133,46 +155,116 @@ class RemoteControlService : Service() {
     }
 
     private fun startProjection(resultCode: Int, resultData: Intent) {
-        AppLogger.log("RemoteControlService", "Starting MediaProjection (H.264)")
+        AppLogger.log("RemoteControlService", "Starting Projection in mode: $currentMode")
         
-        // Clean up previous projection if exists
-        stopProjection()
+        stopProjection() // Clean up previous
         
         val mpManager = getSystemService(MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
         if (mediaProjection == null) {
             mediaProjection = mpManager.getMediaProjection(resultCode, resultData)
         }
 
+        if (currentMode == Mode.PHOTO) {
+            startPhotoMode()
+        } else {
+            startVideoMode()
+        }
+    }
+    
+    private fun startPhotoMode() {
         val windowManager = getSystemService(WINDOW_SERVICE) as WindowManager
         val metrics = DisplayMetrics()
         windowManager.defaultDisplay.getRealMetrics(metrics)
         
-        // Calculate dimensions based on float scale
-        // Video dimensions must be even numbers for H.264
-        var width = (metrics.widthPixels / currentScale).roundToInt()
-        var height = (metrics.heightPixels / currentScale).roundToInt()
+        val width = (metrics.widthPixels / photoScale).toInt()
+        val height = (metrics.heightPixels / photoScale).toInt()
+        val density = metrics.densityDpi
         
+        imageReader = ImageReader.newInstance(width, height, PixelFormat.RGBA_8888, 2)
+        virtualDisplay = mediaProjection?.createVirtualDisplay(
+            "RemoteControlPhoto",
+            width, height, density,
+            DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
+            imageReader?.surface,
+            null, null
+        )
+        
+        isImageReaderRunning = true
+        
+        imageReader?.setOnImageAvailableListener({ reader ->
+            if (!isImageReaderRunning) return@setOnImageAvailableListener
+            
+            try {
+                val image = reader.acquireLatestImage() ?: return@setOnImageAvailableListener
+                
+                val planes = image.planes
+                val buffer = planes[0].buffer
+                val pixelStride = planes[0].pixelStride
+                val rowStride = planes[0].rowStride
+                val rowPadding = rowStride - pixelStride * width
+                
+                // Reuse bitmap if possible
+                if (reusableBitmap == null || reusableBitmap?.width != width + rowPadding / pixelStride || reusableBitmap?.height != height) {
+                    reusableBitmap = Bitmap.createBitmap(width + rowPadding / pixelStride, height, Bitmap.Config.ARGB_8888)
+                }
+                
+                reusableBitmap?.copyPixelsFromBuffer(buffer)
+                image.close()
+                
+                // Crop if needed
+                val finalBitmap = if (rowPadding == 0) {
+                    reusableBitmap!!
+                } else {
+                    Bitmap.createBitmap(reusableBitmap!!, 0, 0, width, height)
+                }
+                
+                val outputStream = ByteArrayOutputStream()
+                val format = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                    Bitmap.CompressFormat.WEBP_LOSSY
+                } else {
+                    Bitmap.CompressFormat.JPEG
+                }
+                
+                finalBitmap.compress(format, photoQuality, outputStream)
+                val bytes = outputStream.toByteArray()
+                
+                serviceScope.launch {
+                    _imageFlow.emit(bytes)
+                }
+                
+            } catch (e: Exception) {
+                Log.e("RemoteControlService", "ImageReader error", e)
+            }
+        }, null)
+    }
+    
+    private fun startVideoMode() {
+        val windowManager = getSystemService(WINDOW_SERVICE) as WindowManager
+        val metrics = DisplayMetrics()
+        windowManager.defaultDisplay.getRealMetrics(metrics)
+        
+        // Video dimensions must be even
+        var width = metrics.widthPixels
+        var height = metrics.heightPixels
         if (width % 2 != 0) width--
         if (height % 2 != 0) height--
         
         val density = metrics.densityDpi
-
+        
         try {
-            // Setup MediaCodec Encoder
             val format = MediaFormat.createVideoFormat(MediaFormat.MIMETYPE_VIDEO_AVC, width, height)
             format.setInteger(MediaFormat.KEY_COLOR_FORMAT, MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface)
-            format.setInteger(MediaFormat.KEY_BIT_RATE, currentBitrate)
-            format.setInteger(MediaFormat.KEY_FRAME_RATE, 30)
-            format.setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 1) // 1 second between I-frames
+            format.setInteger(MediaFormat.KEY_BIT_RATE, videoBitrate)
+            format.setInteger(MediaFormat.KEY_FRAME_RATE, videoFps)
+            format.setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 1)
             
             mediaCodec = MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_VIDEO_AVC)
             mediaCodec?.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
             inputSurface = mediaCodec?.createInputSurface()
             mediaCodec?.start()
             
-            // Create VirtualDisplay on the Encoder's input surface
             virtualDisplay = mediaProjection?.createVirtualDisplay(
-                "RemoteControl",
+                "RemoteControlVideo",
                 width, height, density,
                 DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
                 inputSurface,
@@ -183,7 +275,7 @@ class RemoteControlService : Service() {
             startEncoderLoop()
             
         } catch (e: Exception) {
-            AppLogger.error("RemoteControlService", "Error starting encoder", e)
+            AppLogger.error("RemoteControlService", "Error starting video mode", e)
         }
     }
     
@@ -199,7 +291,6 @@ class RemoteControlService : Service() {
                         val outputBuffer = mediaCodec?.getOutputBuffer(outputBufferId)
                         
                         if (outputBuffer != null) {
-                            // Adjust position and limit
                             outputBuffer.position(bufferInfo.offset)
                             outputBuffer.limit(bufferInfo.offset + bufferInfo.size)
                             
@@ -212,19 +303,22 @@ class RemoteControlService : Service() {
                         mediaCodec?.releaseOutputBuffer(outputBufferId, false)
                     }
                 } catch (e: Exception) {
-                    if (isEncoderRunning) {
-                        Log.e("RemoteControlService", "Encoder loop error", e)
-                    }
+                    if (isEncoderRunning) Log.e("RemoteControlService", "Encoder loop error", e)
                 }
             }
         }
     }
     
     private fun stopProjection() {
+        isImageReaderRunning = false
         isEncoderRunning = false
+        
         try {
             virtualDisplay?.release()
             virtualDisplay = null
+            
+            imageReader?.close()
+            imageReader = null
             
             mediaCodec?.stop()
             mediaCodec?.release()
@@ -237,15 +331,32 @@ class RemoteControlService : Service() {
         }
     }
 
-    fun updateQuality(scale: Float, quality: Int) {
-        // Map "quality" (0-100) to bitrate (500kbps - 5Mbps)
-        // Quality 50 -> 2Mbps
-        val newBitrate = (quality * 50000).coerceAtLeast(500000)
-        
+    fun setMode(modeStr: String) {
+        val newMode = if (modeStr == "video") Mode.VIDEO else Mode.PHOTO
+        if (currentMode != newMode) {
+            currentMode = newMode
+            restartProjection()
+        }
+    }
+    
+    fun updatePhotoSettings(scale: Float, quality: Int) {
+        if (currentMode == Mode.PHOTO) {
+            photoScale = scale
+            photoQuality = quality
+            restartProjection()
+        }
+    }
+    
+    fun updateVideoSettings(bitrate: Int, fps: Int) {
+        if (currentMode == Mode.VIDEO) {
+            videoBitrate = bitrate
+            videoFps = fps
+            restartProjection()
+        }
+    }
+    
+    private fun restartProjection() {
         if (savedResultCode != 0 && savedResultData != null) {
-            currentScale = scale
-            currentBitrate = newBitrate
-            // Restart projection with new settings
             serviceScope.launch(Dispatchers.Main) {
                 startProjection(savedResultCode, savedResultData!!)
             }
@@ -261,7 +372,6 @@ class RemoteControlService : Service() {
     }
     
     private fun getIpAddress(): String {
-        // Simplified IP retrieval
         try {
             val interfaces = java.net.NetworkInterface.getNetworkInterfaces()
             while (interfaces.hasMoreElements()) {
