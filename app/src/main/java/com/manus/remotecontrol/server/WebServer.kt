@@ -39,7 +39,7 @@ class WebServer(
                 // Serve index.html manually from assets to ensure it works on Android
                 get("/") {
                     try {
-                        val indexContent = context.assets.open("web/index.html").bufferedReader().use { it.readText() }
+                        val indexContent = this@WebServer.context.assets.open("web/index.html").bufferedReader().use { it.readText() }
                         call.respondText(indexContent, ContentType.Text.Html)
                     } catch (e: Exception) {
                         call.respondText("Error loading UI: ${e.message}", ContentType.Text.Plain)
