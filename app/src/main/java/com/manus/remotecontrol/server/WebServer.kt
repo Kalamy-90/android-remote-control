@@ -18,6 +18,7 @@ import io.ktor.server.http.content.*
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.channels.consumeEach
 import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.conflate
 import org.json.JSONObject
 import java.io.File
 import java.util.concurrent.atomic.AtomicBoolean
@@ -61,10 +62,18 @@ class WebServer(
                         }
                         
                         // Start streaming video to this client
+                        // Use conflate() to drop old frames if the client is slow
+                        // This ensures we always send the LATEST frame available
                         val videoJob = launch {
-                            remoteControlService.jpegFlow.collectLatest { jpegBytes ->
-                                send(Frame.Binary(true, jpegBytes))
-                            }
+                            remoteControlService.jpegFlow
+                                .conflate() // Drop intermediate values if collector is slow
+                                .collect { jpegBytes ->
+                                    try {
+                                        send(Frame.Binary(true, jpegBytes))
+                                    } catch (e: Exception) {
+                                        // Ignore send errors (client might have disconnected)
+                                    }
+                                }
                         }
 
                         // Handle incoming control commands

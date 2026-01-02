@@ -76,6 +76,17 @@
             align-items: center;
             font-weight: bold;
         }
+        #fullscreen-btn {
+            position: absolute;
+            top: 10px;
+            right: 10px;
+            background-color: rgba(0, 0, 0, 0.5);
+            color: white;
+            border: none;
+            padding: 5px 10px;
+            cursor: pointer;
+            z-index: 10;
+        }
     </style>
 </head>
 <body>
@@ -91,6 +102,7 @@
 
     <div id="control-screen">
         <div id="screen-container">
+            <button id="fullscreen-btn" onclick="toggleFullscreen()">⛶</button>
             <img id="remote-screen" src="" alt="Écran distant">
         </div>
 
@@ -192,55 +204,101 @@
             }
         }
 
-        screenImg.addEventListener('click', (e) => {
-            if (!ws || ws.readyState !== WebSocket.OPEN) return;
-            
-            const rect = screenImg.getBoundingClientRect();
-            
-            // Calculate relative coordinates (0.0 to 1.0)
-            const x = (e.clientX - rect.left) / rect.width;
-            const y = (e.clientY - rect.top) / rect.height;
-            
-            ws.send(JSON.stringify({
-                type: 'tap',
-                x: x,
-                y: y
-            }));
-        });
+        function toggleFullscreen() {
+            if (!document.fullscreenElement) {
+                screenContainer.requestFullscreen().catch(err => {
+                    alert(`Error attempting to enable full-screen mode: ${err.message} (${err.name})`);
+                });
+                screenImg.style.maxHeight = "100vh";
+                screenImg.style.width = "auto";
+                screenImg.style.height = "100%";
+            } else {
+                document.exitFullscreen();
+                screenImg.style.maxHeight = "80vh";
+                screenImg.style.width = "auto";
+                screenImg.style.height = "auto";
+            }
+        }
 
-        // Simple swipe detection
+        // --- Touch & Mouse Event Handling ---
+
         let startX, startY;
+        let isDragging = false;
+
+        function handleStart(x, y) {
+            startX = x;
+            startY = y;
+            isDragging = false;
+        }
+
+        function handleEnd(x, y) {
+            if (startX === null || startY === null) return;
+
+            const diffX = Math.abs(x - startX);
+            const diffY = Math.abs(y - startY);
+            const rect = screenImg.getBoundingClientRect();
+
+            if (diffX > 10 || diffY > 10) {
+                // Swipe
+                const x1 = (startX - rect.left) / rect.width;
+                const y1 = (startY - rect.top) / rect.height;
+                const x2 = (x - rect.left) / rect.width;
+                const y2 = (y - rect.top) / rect.height;
+
+                if (ws && ws.readyState === WebSocket.OPEN) {
+                    ws.send(JSON.stringify({
+                        type: 'swipe',
+                        x1: x1,
+                        y1: y1,
+                        x2: x2,
+                        y2: y2,
+                        duration: 300
+                    }));
+                }
+            } else {
+                // Tap
+                const tapX = (x - rect.left) / rect.width;
+                const tapY = (y - rect.top) / rect.height;
+
+                if (ws && ws.readyState === WebSocket.OPEN) {
+                    ws.send(JSON.stringify({
+                        type: 'tap',
+                        x: tapX,
+                        y: tapY
+                    }));
+                }
+            }
+
+            startX = null;
+            startY = null;
+        }
+
+        // Mouse Events
         screenImg.addEventListener('mousedown', (e) => {
-            startX = e.clientX;
-            startY = e.clientY;
+            e.preventDefault();
+            handleStart(e.clientX, e.clientY);
         });
 
         screenImg.addEventListener('mouseup', (e) => {
-            if (!startX) return;
-            const diffX = Math.abs(e.clientX - startX);
-            const diffY = Math.abs(e.clientY - startY);
-            
-            if (diffX > 10 || diffY > 10) { // It's a swipe
-                const rect = screenImg.getBoundingClientRect();
-                
-                // Calculate relative coordinates (0.0 to 1.0)
-                const x1 = (startX - rect.left) / rect.width;
-                const y1 = (startY - rect.top) / rect.height;
-                const x2 = (e.clientX - rect.left) / rect.width;
-                const y2 = (e.clientY - rect.top) / rect.height;
-                
-                ws.send(JSON.stringify({
-                    type: 'swipe',
-                    x1: x1,
-                    y1: y1,
-                    x2: x2,
-                    y2: y2,
-                    duration: 300
-                }));
-            }
-            startX = null;
-            startY = null;
+            e.preventDefault();
+            handleEnd(e.clientX, e.clientY);
         });
+
+        // Touch Events (for iPad/Mobile)
+        screenImg.addEventListener('touchstart', (e) => {
+            e.preventDefault(); // Prevent scrolling
+            if (e.touches.length > 0) {
+                handleStart(e.touches[0].clientX, e.touches[0].clientY);
+            }
+        }, { passive: false });
+
+        screenImg.addEventListener('touchend', (e) => {
+            e.preventDefault();
+            if (e.changedTouches.length > 0) {
+                handleEnd(e.changedTouches[0].clientX, e.changedTouches[0].clientY);
+            }
+        }, { passive: false });
+
     </script>
 </body>
 </html>
