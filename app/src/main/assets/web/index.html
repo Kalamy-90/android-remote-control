@@ -4,6 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Android Remote Control</title>
+    <script src="jmuxer.min.js"></script>
     <style>
         body {
             font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
@@ -59,7 +60,8 @@
             align-items: center;
             background-color: #000;
         }
-        #remote-screen {
+        /* Video element instead of img */
+        #remote-video {
             max-height: 80vh;
             display: block;
             max-width: 100%;
@@ -122,7 +124,7 @@
             background-color: black;
         }
         
-        #screen-container:fullscreen #remote-screen {
+        #screen-container:fullscreen #remote-video {
             max-height: 100vh;
             max-width: 100vw;
             height: 100%;
@@ -154,7 +156,7 @@
 
         <div id="screen-container">
             <button id="fullscreen-btn" onclick="toggleFullscreen()">⛶</button>
-            <img id="remote-screen" src="" alt="Écran distant">
+            <video id="remote-video" autoplay muted playsinline></video>
         </div>
 
         <div class="nav-bar">
@@ -166,7 +168,8 @@
 
     <script>
         let ws;
-        const screenImg = document.getElementById('remote-screen');
+        let jmuxer;
+        const videoEl = document.getElementById('remote-video');
         const screenContainer = document.getElementById('screen-container');
 
         function log(msg) {
@@ -188,12 +191,26 @@
             document.getElementById('error-msg').style.display = 'none';
             log("Tentative de connexion...");
 
+            // Initialize JMuxer
+            if (jmuxer) {
+                jmuxer.destroy();
+            }
+            
+            jmuxer = new JMuxer({
+                node: 'remote-video',
+                mode: 'video',
+                flushingTime: 0, // Instant playback
+                fps: 30,
+                debug: false
+            });
+
             const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
             const wsUrl = `${protocol}//${window.location.host}/control`;
             log(`Connecting to ${wsUrl}`);
             
             try {
                 ws = new WebSocket(wsUrl);
+                ws.binaryType = 'arraybuffer'; // Important for JMuxer
             } catch (e) {
                 log(`Erreur création WebSocket: ${e.message}`);
                 resetUI();
@@ -217,14 +234,15 @@
                 if (typeof event.data === 'string') {
                     log(`Message reçu: ${event.data}`);
                 } else {
-                    // Binary data = Image frame
-                    const blob = event.data;
-                    const url = URL.createObjectURL(blob);
-                    screenImg.onload = () => URL.revokeObjectURL(url);
-                    screenImg.src = url;
+                    // Binary data = H.264 NAL units
+                    const data = new Uint8Array(event.data);
+                    
+                    jmuxer.feed({
+                        video: data
+                    });
                     
                     if (document.getElementById('login-screen').style.display !== 'none') {
-                        log("Premier frame reçu, affichage écran");
+                        log("Premier frame vidéo reçu, affichage écran");
                         document.getElementById('login-screen').style.display = 'none';
                         document.getElementById('control-screen').style.display = 'flex';
                     }
@@ -257,27 +275,27 @@
 
         function changeQuality() {
             const quality = document.getElementById('quality').value;
-            let scale = 2.5; // Default to 1/2.5 (40% scale)
-            let jpegQuality = 50;
+            let scale = 2.0; 
+            let bitrateFactor = 50; // Maps to 2.5 Mbps
 
             if (quality === 'low') {
-                scale = 4.0; // 1/4 Resolution
-                jpegQuality = 40;
+                scale = 3.0; // 1/3 Resolution
+                bitrateFactor = 20; // 1 Mbps
             } else if (quality === 'medium') {
-                scale = 2.5; // 1/2.5 Resolution (40% scale)
-                jpegQuality = 50;
+                scale = 2.0; // 1/2 Resolution
+                bitrateFactor = 50; // 2.5 Mbps
             } else if (quality === 'high') {
                 scale = 1.0; // 1/1 Resolution (Native Full HD)
-                jpegQuality = 70; // Good quality, but not too heavy for Full HD
+                bitrateFactor = 100; // 5 Mbps
             }
 
             if (ws && ws.readyState === WebSocket.OPEN) {
                 ws.send(JSON.stringify({
                     type: 'quality',
                     scale: scale,
-                    quality: jpegQuality
+                    quality: bitrateFactor
                 }));
-                log(`Changement qualité: ${quality} (1/${scale}, ${jpegQuality}%)`);
+                log(`Changement qualité: ${quality} (1/${scale}, Bitrate Factor ${bitrateFactor})`);
             }
         }
 
@@ -295,9 +313,9 @@
         document.addEventListener('fullscreenchange', (event) => {
             if (!document.fullscreenElement) {
                 // Exiting fullscreen - reset styles
-                screenImg.style.maxHeight = "80vh";
-                screenImg.style.width = "auto";
-                screenImg.style.height = "auto";
+                videoEl.style.maxHeight = "80vh";
+                videoEl.style.width = "auto";
+                videoEl.style.height = "auto";
                 screenContainer.style.width = "";
                 screenContainer.style.height = "";
                 screenContainer.style.margin = "20px 0 0 0";
@@ -323,7 +341,7 @@
 
             const diffX = Math.abs(x - startX);
             const diffY = Math.abs(y - startY);
-            const rect = screenImg.getBoundingClientRect();
+            const rect = videoEl.getBoundingClientRect();
 
             // Calculate relative coordinates based on the displayed image size
             // This works even if the image is centered with black bars
@@ -373,25 +391,25 @@
         }
 
         // Mouse Events
-        screenImg.addEventListener('mousedown', (e) => {
+        videoEl.addEventListener('mousedown', (e) => {
             e.preventDefault();
             handleStart(e.clientX, e.clientY);
         });
 
-        screenImg.addEventListener('mouseup', (e) => {
+        videoEl.addEventListener('mouseup', (e) => {
             e.preventDefault();
             handleEnd(e.clientX, e.clientY);
         });
 
         // Touch Events (for iPad/Mobile)
-        screenImg.addEventListener('touchstart', (e) => {
+        videoEl.addEventListener('touchstart', (e) => {
             e.preventDefault(); // Prevent scrolling
             if (e.touches.length > 0) {
                 handleStart(e.touches[0].clientX, e.touches[0].clientY);
             }
         }, { passive: false });
 
-        screenImg.addEventListener('touchend', (e) => {
+        videoEl.addEventListener('touchend', (e) => {
             e.preventDefault();
             if (e.changedTouches.length > 0) {
                 handleEnd(e.changedTouches[0].clientX, e.changedTouches[0].clientY);

@@ -12,14 +12,19 @@ import android.graphics.PixelFormat
 import android.hardware.display.DisplayManager
 import android.hardware.display.VirtualDisplay
 import android.media.ImageReader
+import android.media.MediaCodec
+import android.media.MediaCodecInfo
+import android.media.MediaFormat
 import android.media.projection.MediaProjection
 import android.media.projection.MediaProjectionManager
 import android.os.Build
+import android.os.Bundle
 import android.os.IBinder
 import android.util.DisplayMetrics
 import android.util.Log
 import com.manus.remotecontrol.utils.AppLogger
 import android.view.WindowManager
+import android.view.Surface
 import androidx.core.app.NotificationCompat
 import com.manus.remotecontrol.R
 import com.manus.remotecontrol.server.WebServer
@@ -30,6 +35,7 @@ import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.launch
 import java.io.ByteArrayOutputStream
+import java.nio.ByteBuffer
 import kotlin.random.Random
 import kotlin.math.roundToInt
 
@@ -50,22 +56,23 @@ class RemoteControlService : Service() {
 
     private var mediaProjection: MediaProjection? = null
     private var virtualDisplay: VirtualDisplay? = null
-    private var imageReader: ImageReader? = null
+    private var mediaCodec: MediaCodec? = null
+    private var inputSurface: Surface? = null
     private var webServer: WebServer? = null
     
     private val serviceScope = CoroutineScope(Dispatchers.Default + Job())
     
-    private val _jpegFlow = MutableSharedFlow<ByteArray>(replay = 0)
-    val jpegFlow = _jpegFlow.asSharedFlow()
+    // Flow for H.264 NAL units
+    private val _h264Flow = MutableSharedFlow<ByteArray>(replay = 0)
+    val h264Flow = _h264Flow.asSharedFlow()
 
     // Default settings
-    private var currentScale = 2.0f // Changed to Float for precise scaling
-    private var currentQuality = 50 // 50% quality
+    private var currentScale = 2.0f // Default 1/2 scale
+    private var currentBitrate = 2000000 // 2 Mbps default
     private var savedResultCode: Int = 0
     private var savedResultData: Intent? = null
     
-    // Reusable bitmap to reduce GC pressure
-    private var reusableBitmap: Bitmap? = null
+    private var isEncoderRunning = false
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -126,13 +133,10 @@ class RemoteControlService : Service() {
     }
 
     private fun startProjection(resultCode: Int, resultData: Intent) {
-        AppLogger.log("RemoteControlService", "Starting MediaProjection (Scale: 1/$currentScale, Quality: $currentQuality%)")
+        AppLogger.log("RemoteControlService", "Starting MediaProjection (H.264)")
         
         // Clean up previous projection if exists
-        virtualDisplay?.release()
-        imageReader?.close()
-        reusableBitmap?.recycle()
-        reusableBitmap = null
+        stopProjection()
         
         val mpManager = getSystemService(MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
         if (mediaProjection == null) {
@@ -144,77 +148,103 @@ class RemoteControlService : Service() {
         windowManager.defaultDisplay.getRealMetrics(metrics)
         
         // Calculate dimensions based on float scale
-        val width = (metrics.widthPixels / currentScale).roundToInt()
-        val height = (metrics.heightPixels / currentScale).roundToInt()
+        // Video dimensions must be even numbers for H.264
+        var width = (metrics.widthPixels / currentScale).roundToInt()
+        var height = (metrics.heightPixels / currentScale).roundToInt()
+        
+        if (width % 2 != 0) width--
+        if (height % 2 != 0) height--
+        
         val density = metrics.densityDpi
 
-        // Use 2 images in buffer to allow parallel processing
-        imageReader = ImageReader.newInstance(width, height, PixelFormat.RGBA_8888, 2)
-        
-        virtualDisplay = mediaProjection?.createVirtualDisplay(
-            "RemoteControl",
-            width, height, density,
-            DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
-            imageReader?.surface,
-            null, null
-        )
-
-        imageReader?.setOnImageAvailableListener({ reader ->
-            try {
-                val image = reader.acquireLatestImage()
-                if (image != null) {
-                    val planes = image.planes
-                    val buffer = planes[0].buffer
-                    val pixelStride = planes[0].pixelStride
-                    val rowStride = planes[0].rowStride
-                    val rowPadding = rowStride - pixelStride * width
+        try {
+            // Setup MediaCodec Encoder
+            val format = MediaFormat.createVideoFormat(MediaFormat.MIMETYPE_VIDEO_AVC, width, height)
+            format.setInteger(MediaFormat.KEY_COLOR_FORMAT, MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface)
+            format.setInteger(MediaFormat.KEY_BIT_RATE, currentBitrate)
+            format.setInteger(MediaFormat.KEY_FRAME_RATE, 30)
+            format.setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 1) // 1 second between I-frames
+            
+            mediaCodec = MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_VIDEO_AVC)
+            mediaCodec?.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
+            inputSurface = mediaCodec?.createInputSurface()
+            mediaCodec?.start()
+            
+            // Create VirtualDisplay on the Encoder's input surface
+            virtualDisplay = mediaProjection?.createVirtualDisplay(
+                "RemoteControl",
+                width, height, density,
+                DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
+                inputSurface,
+                null, null
+            )
+            
+            isEncoderRunning = true
+            startEncoderLoop()
+            
+        } catch (e: Exception) {
+            AppLogger.error("RemoteControlService", "Error starting encoder", e)
+        }
+    }
+    
+    private fun startEncoderLoop() {
+        serviceScope.launch(Dispatchers.Default) {
+            val bufferInfo = MediaCodec.BufferInfo()
+            
+            while (isEncoderRunning && mediaCodec != null) {
+                try {
+                    val outputBufferId = mediaCodec?.dequeueOutputBuffer(bufferInfo, 10000) ?: -1
                     
-                    // Create or reuse bitmap
-                    val bitmapWidth = width + rowPadding / pixelStride
-                    if (reusableBitmap == null || reusableBitmap?.width != bitmapWidth || reusableBitmap?.height != height) {
-                        reusableBitmap?.recycle()
-                        reusableBitmap = Bitmap.createBitmap(bitmapWidth, height, Bitmap.Config.ARGB_8888)
+                    if (outputBufferId >= 0) {
+                        val outputBuffer = mediaCodec?.getOutputBuffer(outputBufferId)
+                        
+                        if (outputBuffer != null) {
+                            // Adjust position and limit
+                            outputBuffer.position(bufferInfo.offset)
+                            outputBuffer.limit(bufferInfo.offset + bufferInfo.size)
+                            
+                            val data = ByteArray(bufferInfo.size)
+                            outputBuffer.get(data)
+                            
+                            _h264Flow.emit(data)
+                        }
+                        
+                        mediaCodec?.releaseOutputBuffer(outputBufferId, false)
                     }
-                    
-                    reusableBitmap?.copyPixelsFromBuffer(buffer)
-                    
-                    // Crop if necessary
-                    val finalBitmap = if (rowPadding == 0) reusableBitmap!! else Bitmap.createBitmap(reusableBitmap!!, 0, 0, width, height)
-                    
-                    val stream = ByteArrayOutputStream()
-                    
-                    // Use WebP on Android 10+ (API 29) for better compression/quality ratio
-                    // Fallback to JPEG on older versions
-                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) { // Android 11+ supports lossy WebP better
-                        finalBitmap.compress(Bitmap.CompressFormat.WEBP_LOSSY, currentQuality, stream)
-                    } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) { // Android 10
-                         finalBitmap.compress(Bitmap.CompressFormat.WEBP, currentQuality, stream)
-                    } else {
-                        finalBitmap.compress(Bitmap.CompressFormat.JPEG, currentQuality, stream)
+                } catch (e: Exception) {
+                    if (isEncoderRunning) {
+                        Log.e("RemoteControlService", "Encoder loop error", e)
                     }
-                    
-                    val bytes = stream.toByteArray()
-                    
-                    serviceScope.launch {
-                        _jpegFlow.emit(bytes)
-                    }
-                    
-                    // Don't recycle reusableBitmap here, we reuse it!
-                    // Only recycle finalBitmap if it was a created crop
-                    if (finalBitmap != reusableBitmap) finalBitmap.recycle()
-                    
-                    image.close()
                 }
-            } catch (e: Exception) {
-                Log.e("RemoteControlService", "Error processing image", e)
             }
-        }, null) // Process on main thread handler (null) or background handler if needed
+        }
+    }
+    
+    private fun stopProjection() {
+        isEncoderRunning = false
+        try {
+            virtualDisplay?.release()
+            virtualDisplay = null
+            
+            mediaCodec?.stop()
+            mediaCodec?.release()
+            mediaCodec = null
+            
+            inputSurface?.release()
+            inputSurface = null
+        } catch (e: Exception) {
+            Log.e("RemoteControlService", "Error stopping projection", e)
+        }
     }
 
     fun updateQuality(scale: Float, quality: Int) {
+        // Map "quality" (0-100) to bitrate (500kbps - 5Mbps)
+        // Quality 50 -> 2Mbps
+        val newBitrate = (quality * 50000).coerceAtLeast(500000)
+        
         if (savedResultCode != 0 && savedResultData != null) {
             currentScale = scale
-            currentQuality = quality
+            currentBitrate = newBitrate
             // Restart projection with new settings
             serviceScope.launch(Dispatchers.Main) {
                 startProjection(savedResultCode, savedResultData!!)
@@ -252,9 +282,7 @@ class RemoteControlService : Service() {
         super.onDestroy()
         isRunning = false
         webServer?.stop()
-        virtualDisplay?.release()
+        stopProjection()
         mediaProjection?.stop()
-        imageReader?.close()
-        reusableBitmap?.recycle()
     }
 }

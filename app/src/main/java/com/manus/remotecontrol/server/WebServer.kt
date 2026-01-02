@@ -49,6 +49,16 @@ class WebServer(
                         Log.e("WebServer", "Error serving index.html", e)
                     }
                 }
+                
+                // Serve jmuxer.min.js
+                get("/jmuxer.min.js") {
+                    try {
+                        val jsContent = this@WebServer.context.assets.open("web/jmuxer.min.js").bufferedReader().use { it.readText() }
+                        call.respondText(jsContent, ContentType.Application.JavaScript)
+                    } catch (e: Exception) {
+                        call.respondText("Error loading JMuxer: ${e.message}", ContentType.Text.Plain)
+                    }
+                }
 
                 // WebSocket for control and streaming
                 webSocket("/control") {
@@ -61,15 +71,14 @@ class WebServer(
                             return@webSocket
                         }
                         
-                        // Start streaming video to this client
+                        // Start streaming H.264 video to this client
                         // Use conflate() to drop old frames if the client is slow
-                        // This ensures we always send the LATEST frame available
                         val videoJob = launch {
-                            remoteControlService.jpegFlow
+                            remoteControlService.h264Flow
                                 .conflate() // Drop intermediate values if collector is slow
-                                .collect { jpegBytes ->
+                                .collect { h264Bytes ->
                                     try {
-                                        send(Frame.Binary(true, jpegBytes))
+                                        send(Frame.Binary(true, h264Bytes))
                                     } catch (e: Exception) {
                                         // Ignore send errors (client might have disconnected)
                                     }
@@ -110,8 +119,8 @@ class WebServer(
             
             // Handle quality update command first (doesn't need AccessibilityService)
             if (type == "quality") {
-                val scale = json.optDouble("scale", 3.0).toFloat()
-                val quality = json.optInt("quality", 50)
+                val scale = json.optDouble("scale", 2.0).toFloat()
+                val quality = json.optInt("quality", 50) // Now represents bitrate factor
                 remoteControlService.updateQuality(scale, quality)
                 return
             }
