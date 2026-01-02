@@ -36,9 +36,15 @@ class WebServer(
             install(WebSockets)
             
             routing {
-                // Serve static files from assets
-                staticResources("/", "web") {
-                    default("index.html")
+                // Serve index.html manually from assets to ensure it works on Android
+                get("/") {
+                    try {
+                        val indexContent = context.assets.open("web/index.html").bufferedReader().use { it.readText() }
+                        call.respondText(indexContent, ContentType.Text.Html)
+                    } catch (e: Exception) {
+                        call.respondText("Error loading UI: ${e.message}", ContentType.Text.Plain)
+                        Log.e("WebServer", "Error serving index.html", e)
+                    }
                 }
 
                 // WebSocket for control and streaming
