@@ -58,10 +58,13 @@ class RemoteControlService : Service() {
     val jpegFlow = _jpegFlow.asSharedFlow()
 
     // Default settings
-    private var currentScale = 3 // 1/3 resolution
-    private var currentQuality = 50 // 50% JPEG quality
+    private var currentScale = 2 // Increased default resolution to 1/2 thanks to optimizations
+    private var currentQuality = 50 // 50% quality
     private var savedResultCode: Int = 0
     private var savedResultData: Intent? = null
+    
+    // Reusable bitmap to reduce GC pressure
+    private var reusableBitmap: Bitmap? = null
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -127,6 +130,8 @@ class RemoteControlService : Service() {
         // Clean up previous projection if exists
         virtualDisplay?.release()
         imageReader?.close()
+        reusableBitmap?.recycle()
+        reusableBitmap = null
         
         val mpManager = getSystemService(MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
         if (mediaProjection == null) {
@@ -141,6 +146,7 @@ class RemoteControlService : Service() {
         val height = metrics.heightPixels / currentScale
         val density = metrics.densityDpi
 
+        // Use 2 images in buffer to allow parallel processing
         imageReader = ImageReader.newInstance(width, height, PixelFormat.RGBA_8888, 2)
         
         virtualDisplay = mediaProjection?.createVirtualDisplay(
@@ -161,28 +167,46 @@ class RemoteControlService : Service() {
                     val rowStride = planes[0].rowStride
                     val rowPadding = rowStride - pixelStride * width
                     
-                    val bitmap = Bitmap.createBitmap(width + rowPadding / pixelStride, height, Bitmap.Config.ARGB_8888)
-                    bitmap.copyPixelsFromBuffer(buffer)
+                    // Create or reuse bitmap
+                    val bitmapWidth = width + rowPadding / pixelStride
+                    if (reusableBitmap == null || reusableBitmap?.width != bitmapWidth || reusableBitmap?.height != height) {
+                        reusableBitmap?.recycle()
+                        reusableBitmap = Bitmap.createBitmap(bitmapWidth, height, Bitmap.Config.ARGB_8888)
+                    }
                     
-                    // Crop if necessary and compress
-                    val finalBitmap = if (rowPadding == 0) bitmap else Bitmap.createBitmap(bitmap, 0, 0, width, height)
+                    reusableBitmap?.copyPixelsFromBuffer(buffer)
+                    
+                    // Crop if necessary
+                    val finalBitmap = if (rowPadding == 0) reusableBitmap!! else Bitmap.createBitmap(reusableBitmap!!, 0, 0, width, height)
                     
                     val stream = ByteArrayOutputStream()
-                    finalBitmap.compress(Bitmap.CompressFormat.JPEG, currentQuality, stream)
+                    
+                    // Use WebP on Android 10+ (API 29) for better compression/quality ratio
+                    // Fallback to JPEG on older versions
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) { // Android 11+ supports lossy WebP better
+                        finalBitmap.compress(Bitmap.CompressFormat.WEBP_LOSSY, currentQuality, stream)
+                    } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) { // Android 10
+                         finalBitmap.compress(Bitmap.CompressFormat.WEBP, currentQuality, stream)
+                    } else {
+                        finalBitmap.compress(Bitmap.CompressFormat.JPEG, currentQuality, stream)
+                    }
+                    
                     val bytes = stream.toByteArray()
                     
                     serviceScope.launch {
                         _jpegFlow.emit(bytes)
                     }
                     
-                    if (finalBitmap != bitmap) finalBitmap.recycle()
-                    bitmap.recycle()
+                    // Don't recycle reusableBitmap here, we reuse it!
+                    // Only recycle finalBitmap if it was a created crop
+                    if (finalBitmap != reusableBitmap) finalBitmap.recycle()
+                    
                     image.close()
                 }
             } catch (e: Exception) {
                 Log.e("RemoteControlService", "Error processing image", e)
             }
-        }, null)
+        }, null) // Process on main thread handler (null) or background handler if needed
     }
 
     fun updateQuality(scale: Int, quality: Int) {
@@ -190,8 +214,6 @@ class RemoteControlService : Service() {
             currentScale = scale
             currentQuality = quality
             // Restart projection with new settings
-            // We need to run this on main thread or handle concurrency carefully
-            // For simplicity, we just call startProjection again which cleans up old one
             serviceScope.launch(Dispatchers.Main) {
                 startProjection(savedResultCode, savedResultData!!)
             }
@@ -231,5 +253,6 @@ class RemoteControlService : Service() {
         virtualDisplay?.release()
         mediaProjection?.stop()
         imageReader?.close()
+        reusableBitmap?.recycle()
     }
 }
