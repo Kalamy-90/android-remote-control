@@ -147,7 +147,7 @@
             <label for="quality">Qualité:</label>
             <select id="quality" onchange="changeQuality()">
                 <option value="low">Fluide (Basse Résolution)</option>
-                <option value="medium" selected>Équilibré (Moyenne)</option>
+                <option value="medium" selected>Équilibré (Optimisé)</option>
                 <option value="high">Haute Qualité (Full HD)</option>
             </select>
         </div>
@@ -257,17 +257,17 @@
 
         function changeQuality() {
             const quality = document.getElementById('quality').value;
-            let scale = 2; // Default to 1/2 (Balanced)
+            let scale = 2.4; // Default to 1/2.4 (Balanced Optimized)
             let jpegQuality = 50;
 
             if (quality === 'low') {
-                scale = 4; // 1/4 Resolution
+                scale = 4.0; // 1/4 Resolution
                 jpegQuality = 40;
             } else if (quality === 'medium') {
-                scale = 2; // 1/2 Resolution
+                scale = 2.4; // 1/2.4 Resolution (Slightly smaller than 1/2 for better fluidity)
                 jpegQuality = 50;
             } else if (quality === 'high') {
-                scale = 1; // 1/1 Resolution (Native Full HD)
+                scale = 1.0; // 1/1 Resolution (Native Full HD)
                 jpegQuality = 70; // Good quality, but not too heavy for Full HD
             }
 

@@ -31,6 +31,7 @@ import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.launch
 import java.io.ByteArrayOutputStream
 import kotlin.random.Random
+import kotlin.math.roundToInt
 
 class RemoteControlService : Service() {
 
@@ -58,7 +59,7 @@ class RemoteControlService : Service() {
     val jpegFlow = _jpegFlow.asSharedFlow()
 
     // Default settings
-    private var currentScale = 2 // Increased default resolution to 1/2 thanks to optimizations
+    private var currentScale = 2.0f // Changed to Float for precise scaling
     private var currentQuality = 50 // 50% quality
     private var savedResultCode: Int = 0
     private var savedResultData: Intent? = null
@@ -142,8 +143,9 @@ class RemoteControlService : Service() {
         val metrics = DisplayMetrics()
         windowManager.defaultDisplay.getRealMetrics(metrics)
         
-        val width = metrics.widthPixels / currentScale
-        val height = metrics.heightPixels / currentScale
+        // Calculate dimensions based on float scale
+        val width = (metrics.widthPixels / currentScale).roundToInt()
+        val height = (metrics.heightPixels / currentScale).roundToInt()
         val density = metrics.densityDpi
 
         // Use 2 images in buffer to allow parallel processing
@@ -209,7 +211,7 @@ class RemoteControlService : Service() {
         }, null) // Process on main thread handler (null) or background handler if needed
     }
 
-    fun updateQuality(scale: Int, quality: Int) {
+    fun updateQuality(scale: Float, quality: Int) {
         if (savedResultCode != 0 && savedResultData != null) {
             currentScale = scale
             currentQuality = quality

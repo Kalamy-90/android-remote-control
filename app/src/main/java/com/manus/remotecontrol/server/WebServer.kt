@@ -110,7 +110,7 @@ class WebServer(
             
             // Handle quality update command first (doesn't need AccessibilityService)
             if (type == "quality") {
-                val scale = json.optInt("scale", 3)
+                val scale = json.optDouble("scale", 3.0).toFloat()
                 val quality = json.optInt("quality", 50)
                 remoteControlService.updateQuality(scale, quality)
                 return
