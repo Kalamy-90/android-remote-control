@@ -19,6 +19,8 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.channels.consumeEach
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.conflate
+import kotlinx.coroutines.flow.buffer
+import kotlinx.coroutines.channels.Channel
 import org.json.JSONObject
 import java.io.File
 import java.util.concurrent.atomic.AtomicBoolean
@@ -81,7 +83,7 @@ class WebServer(
                         
                         val photoJob = launch {
                             remoteControlService.imageFlow
-                                .conflate()
+                                .conflate() // Keep conflate for Photo mode (we only want the latest frame)
                                 .collect { bytes ->
                                     try {
                                         // Prefix with 0x01 for Photo
@@ -95,7 +97,7 @@ class WebServer(
                         
                         val videoJob = launch {
                             remoteControlService.h264Flow
-                                .conflate()
+                                .buffer(Channel.UNLIMITED) // CRITICAL: Do NOT drop frames for H.264
                                 .collect { bytes ->
                                     try {
                                         // Prefix with 0x02 for Video
