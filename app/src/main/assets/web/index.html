@@ -4,7 +4,10 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Android Remote Control</title>
-    <script src="jmuxer.min.js"></script>
+    <!-- Add random query param to force reload -->
+    <script>
+        document.write('<script src="jmuxer.min.js?v=' + Math.random() + '"><\/script>');
+    </script>
     <style>
         body {
             font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;

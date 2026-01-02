@@ -66,6 +66,16 @@ class WebServer(
                             return@webSocket
                         }
                         
+                        // Send existing SPS/PPS headers if available immediately upon connection
+                        val headers = remoteControlService.getVideoHeaders()
+                        if (headers != null) {
+                            val packet = ByteArray(headers.size + 1)
+                            packet[0] = 0x02 // Video type
+                            System.arraycopy(headers, 0, packet, 1, headers.size)
+                            send(Frame.Binary(true, packet))
+                            Log.d("WebServer", "Sent cached SPS/PPS headers to new client")
+                        }
+                        
                         // Launch two parallel jobs for streaming
                         // The client will only receive data from the active flow (Photo or Video)
                         

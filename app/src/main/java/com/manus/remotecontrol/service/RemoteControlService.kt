@@ -65,6 +65,9 @@ class RemoteControlService : Service() {
     private var mediaCodec: MediaCodec? = null
     private var inputSurface: Surface? = null
     
+    // Store SPS/PPS headers to send to new clients
+    private var spsPpsBuffer: ByteArray? = null
+    
     private var webServer: WebServer? = null
     
     private val serviceScope = CoroutineScope(Dispatchers.Default + Job())
@@ -74,7 +77,8 @@ class RemoteControlService : Service() {
     val imageFlow = _imageFlow.asSharedFlow()
     
     // Flow for Video Mode (H.264)
-    private val _h264Flow = MutableSharedFlow<ByteArray>(replay = 0)
+    // Replay = 1 to ensure new subscribers get the latest header/frame immediately
+    private val _h264Flow = MutableSharedFlow<ByteArray>(replay = 1)
     val h264Flow = _h264Flow.asSharedFlow()
 
     // Settings
@@ -265,7 +269,7 @@ class RemoteControlService : Service() {
             format.setInteger(MediaFormat.KEY_COLOR_FORMAT, MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface)
             format.setInteger(MediaFormat.KEY_BIT_RATE, videoBitrate)
             format.setInteger(MediaFormat.KEY_FRAME_RATE, videoFps)
-            format.setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 1)
+            format.setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 1) // 1 second between I-frames
             
             // Low latency settings if available
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
@@ -286,6 +290,7 @@ class RemoteControlService : Service() {
             )
             
             isEncoderRunning = true
+            spsPpsBuffer = null // Reset headers
             startEncoderLoop()
             
         } catch (e: Exception) {
@@ -311,16 +316,53 @@ class RemoteControlService : Service() {
                             val data = ByteArray(bufferInfo.size)
                             outputBuffer.get(data)
                             
-                            _h264Flow.emit(data)
+                            // Check for SPS/PPS headers (Codec Config)
+                            if ((bufferInfo.flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG) != 0) {
+                                spsPpsBuffer = data
+                                AppLogger.log("RemoteControlService", "Captured SPS/PPS headers: ${data.size} bytes")
+                            }
+                            
+                            // If this is a key frame, prepend SPS/PPS if we have them
+                            // This ensures new clients can start decoding immediately
+                            if ((bufferInfo.flags and MediaCodec.BUFFER_FLAG_KEY_FRAME) != 0 && spsPpsBuffer != null) {
+                                val combined = ByteArray(spsPpsBuffer!!.size + data.size)
+                                System.arraycopy(spsPpsBuffer!!, 0, combined, 0, spsPpsBuffer!!.size)
+                                System.arraycopy(data, 0, combined, spsPpsBuffer!!.size, data.size)
+                                _h264Flow.emit(combined)
+                            } else {
+                                _h264Flow.emit(data)
+                            }
                         }
                         
                         mediaCodec?.releaseOutputBuffer(outputBufferId, false)
+                    } else if (outputBufferId == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED) {
+                        // Fallback: capture SPS/PPS from format if not in buffer
+                        val newFormat = mediaCodec?.outputFormat
+                        val sps = newFormat?.getByteBuffer("csd-0")
+                        val pps = newFormat?.getByteBuffer("csd-1")
+                        
+                        if (sps != null && pps != null) {
+                            val spsBytes = ByteArray(sps.remaining())
+                            sps.get(spsBytes)
+                            val ppsBytes = ByteArray(pps.remaining())
+                            pps.get(ppsBytes)
+                            
+                            spsPpsBuffer = ByteArray(spsBytes.size + ppsBytes.size)
+                            System.arraycopy(spsBytes, 0, spsPpsBuffer!!, 0, spsBytes.size)
+                            System.arraycopy(ppsBytes, 0, spsPpsBuffer!!, spsBytes.size, ppsBytes.size)
+                            AppLogger.log("RemoteControlService", "Extracted SPS/PPS from format: ${spsPpsBuffer?.size} bytes")
+                        }
                     }
                 } catch (e: Exception) {
                     if (isEncoderRunning) Log.e("RemoteControlService", "Encoder loop error", e)
                 }
             }
         }
+    }
+    
+    // Method to get current headers for new clients
+    fun getVideoHeaders(): ByteArray? {
+        return spsPpsBuffer
     }
     
     private fun stopProjection() {
