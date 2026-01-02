@@ -10,7 +10,9 @@ import android.view.View
 import android.widget.Button
 import android.widget.TextView
 import android.widget.Toast
+import android.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
+import com.manus.remotecontrol.utils.AppLogger
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import android.content.pm.PackageManager
@@ -27,6 +29,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var tvPin: TextView
     private lateinit var btnToggleServer: Button
     private lateinit var btnAccessibility: Button
+    private lateinit var btnLogs: Button
 
     private val SCREEN_CAPTURE_REQUEST_CODE = 100
     private val NOTIFICATION_PERMISSION_REQUEST_CODE = 101
@@ -40,6 +43,11 @@ class MainActivity : AppCompatActivity() {
         tvPin = findViewById(R.id.tvPin)
         btnToggleServer = findViewById(R.id.btnToggleServer)
         btnAccessibility = findViewById(R.id.btnAccessibility)
+        btnLogs = findViewById(R.id.btnLogs)
+
+        btnLogs.setOnClickListener {
+            showLogsDialog()
+        }
 
         btnToggleServer.setOnClickListener {
             if (RemoteControlService.isRunning) {
@@ -148,5 +156,21 @@ class MainActivity : AppCompatActivity() {
         }
         startService(intent)
         btnToggleServer.postDelayed({ updateUI() }, 500)
+    }
+
+    private fun showLogsDialog() {
+        val logs = AppLogger.getLogs()
+        AlertDialog.Builder(this)
+            .setTitle("Application Logs")
+            .setMessage(if (logs.isEmpty()) "No logs yet" else logs)
+            .setPositiveButton("Close", null)
+            .setNeutralButton("Clear") { _, _ -> AppLogger.clear() }
+            .setNegativeButton("Copy") { _, _ ->
+                val clipboard = getSystemService(Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
+                val clip = android.content.ClipData.newPlainText("App Logs", logs)
+                clipboard.setPrimaryClip(clip)
+                Toast.makeText(this, "Logs copied to clipboard", Toast.LENGTH_SHORT).show()
+            }
+            .show()
     }
 }

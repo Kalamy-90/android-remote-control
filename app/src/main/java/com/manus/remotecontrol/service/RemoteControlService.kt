@@ -18,6 +18,7 @@ import android.os.Build
 import android.os.IBinder
 import android.util.DisplayMetrics
 import android.util.Log
+import com.manus.remotecontrol.utils.AppLogger
 import android.view.WindowManager
 import androidx.core.app.NotificationCompat
 import com.manus.remotecontrol.R
@@ -61,16 +62,28 @@ class RemoteControlService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
             ACTION_START -> {
+                AppLogger.log("RemoteControlService", "Starting service...")
+                startForegroundService() // Start foreground FIRST
+                
                 val resultCode = intent.getIntExtra(EXTRA_RESULT_CODE, 0)
                 val resultData = intent.getParcelableExtra<Intent>(EXTRA_RESULT_DATA)
                 if (resultCode != 0 && resultData != null) {
-                    startProjection(resultCode, resultData)
-                    startServer()
-                    startForegroundService()
-                    isRunning = true
+                    try {
+                        startProjection(resultCode, resultData)
+                        startServer()
+                        isRunning = true
+                        AppLogger.log("RemoteControlService", "Service started successfully")
+                    } catch (e: Exception) {
+                        AppLogger.error("RemoteControlService", "Error starting components", e)
+                        stopSelf()
+                    }
+                } else {
+                    AppLogger.error("RemoteControlService", "Missing result code or data")
+                    stopSelf()
                 }
             }
             ACTION_STOP -> {
+                AppLogger.log("RemoteControlService", "Stopping service")
                 stopSelf()
             }
         }
@@ -101,6 +114,7 @@ class RemoteControlService : Service() {
     }
 
     private fun startProjection(resultCode: Int, resultData: Intent) {
+        AppLogger.log("RemoteControlService", "Starting MediaProjection")
         val mpManager = getSystemService(MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
         mediaProjection = mpManager.getMediaProjection(resultCode, resultData)
 
@@ -154,6 +168,7 @@ class RemoteControlService : Service() {
     }
 
     private fun startServer() {
+        AppLogger.log("RemoteControlService", "Starting WebServer")
         currentPin = String.format("%04d", Random.nextInt(10000))
         currentIp = getIpAddress()
         webServer = WebServer(this, 8080, currentPin, this)
