@@ -11,6 +11,11 @@ import android.widget.Button
 import android.widget.TextView
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
+import androidx.core.app.ActivityCompat
+import androidx.core.content.ContextCompat
+import android.content.pm.PackageManager
+import android.os.Build
+import android.Manifest
 import com.manus.remotecontrol.R
 import com.manus.remotecontrol.service.AccessibilityInputService
 import com.manus.remotecontrol.service.RemoteControlService
@@ -24,6 +29,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var btnAccessibility: Button
 
     private val SCREEN_CAPTURE_REQUEST_CODE = 100
+    private val NOTIFICATION_PERMISSION_REQUEST_CODE = 101
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -40,7 +46,15 @@ class MainActivity : AppCompatActivity() {
                 stopServer()
             } else {
                 if (checkAccessibilityPermission()) {
-                    requestScreenCapture()
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                        if (ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+                            ActivityCompat.requestPermissions(this, arrayOf(Manifest.permission.POST_NOTIFICATIONS), NOTIFICATION_PERMISSION_REQUEST_CODE)
+                        } else {
+                            requestScreenCapture()
+                        }
+                    } else {
+                        requestScreenCapture()
+                    }
                 } else {
                     Toast.makeText(this, R.string.accessibility_permission_required, Toast.LENGTH_LONG).show()
                 }
@@ -107,9 +121,25 @@ class MainActivity : AppCompatActivity() {
             putExtra(RemoteControlService.EXTRA_RESULT_CODE, resultCode)
             putExtra(RemoteControlService.EXTRA_RESULT_DATA, data)
         }
-        startForegroundService(intent)
-        // Delay UI update slightly to allow service to start
-        btnToggleServer.postDelayed({ updateUI() }, 500)
+        try {
+            ContextCompat.startForegroundService(this, intent)
+            // Delay UI update slightly to allow service to start
+            btnToggleServer.postDelayed({ updateUI() }, 500)
+        } catch (e: Exception) {
+            Toast.makeText(this, "Error starting service: ${e.message}", Toast.LENGTH_LONG).show()
+            e.printStackTrace()
+        }
+    }
+
+    override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (requestCode == NOTIFICATION_PERMISSION_REQUEST_CODE) {
+            if (grantResults.isNotEmpty() && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
+                requestScreenCapture()
+            } else {
+                Toast.makeText(this, "Notification permission required for foreground service", Toast.LENGTH_LONG).show()
+            }
+        }
     }
 
     private fun stopServer() {
