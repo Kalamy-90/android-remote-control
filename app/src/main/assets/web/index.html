@@ -257,14 +257,14 @@
 
         function changeQuality() {
             const quality = document.getElementById('quality').value;
-            let scale = 2.4; // Default to 1/2.4 (Balanced Optimized)
+            let scale = 2.5; // Default to 1/2.5 (40% scale)
             let jpegQuality = 50;
 
             if (quality === 'low') {
                 scale = 4.0; // 1/4 Resolution
                 jpegQuality = 40;
             } else if (quality === 'medium') {
-                scale = 2.4; // 1/2.4 Resolution (Slightly smaller than 1/2 for better fluidity)
+                scale = 2.5; // 1/2.5 Resolution (40% scale)
                 jpegQuality = 50;
             } else if (quality === 'high') {
                 scale = 1.0; // 1/1 Resolution (Native Full HD)
