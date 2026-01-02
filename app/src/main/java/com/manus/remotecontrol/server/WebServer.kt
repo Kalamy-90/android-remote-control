@@ -2,6 +2,8 @@ package com.manus.remotecontrol.server
 
 import android.content.Context
 import android.util.Log
+import android.util.DisplayMetrics
+import android.view.WindowManager
 import com.manus.remotecontrol.service.AccessibilityInputService
 import com.manus.remotecontrol.service.RemoteControlService
 import io.ktor.server.application.*
@@ -98,19 +100,40 @@ class WebServer(
             val type = json.optString("type")
             val service = AccessibilityInputService.instance ?: return
 
+            // Get screen dimensions for relative coordinate conversion
+            val windowManager = context.getSystemService(Context.WINDOW_SERVICE) as WindowManager
+            val metrics = DisplayMetrics()
+            windowManager.defaultDisplay.getRealMetrics(metrics)
+            val screenWidth = metrics.widthPixels
+            val screenHeight = metrics.heightPixels
+
             when (type) {
                 "tap" -> {
-                    val x = json.optDouble("x").toFloat()
-                    val y = json.optDouble("y").toFloat()
-                    service.performTap(x, y)
+                    // Coordinates are now relative (0.0 - 1.0)
+                    val relX = json.optDouble("x").toFloat()
+                    val relY = json.optDouble("y").toFloat()
+                    
+                    // Convert to absolute coordinates
+                    val absX = relX * screenWidth
+                    val absY = relY * screenHeight
+                    
+                    service.performTap(absX, absY)
                 }
                 "swipe" -> {
-                    val x1 = json.optDouble("x1").toFloat()
-                    val y1 = json.optDouble("y1").toFloat()
-                    val x2 = json.optDouble("x2").toFloat()
-                    val y2 = json.optDouble("y2").toFloat()
+                    // Coordinates are now relative (0.0 - 1.0)
+                    val relX1 = json.optDouble("x1").toFloat()
+                    val relY1 = json.optDouble("y1").toFloat()
+                    val relX2 = json.optDouble("x2").toFloat()
+                    val relY2 = json.optDouble("y2").toFloat()
+                    
+                    // Convert to absolute coordinates
+                    val absX1 = relX1 * screenWidth
+                    val absY1 = relY1 * screenHeight
+                    val absX2 = relX2 * screenWidth
+                    val absY2 = relY2 * screenHeight
+                    
                     val duration = json.optLong("duration", 300)
-                    service.performSwipe(x1, y1, x2, y2, duration)
+                    service.performSwipe(absX1, absY1, absX2, absY2, duration)
                 }
                 "key" -> {
                     when (json.optString("code")) {

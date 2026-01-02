@@ -196,11 +196,10 @@
             if (!ws || ws.readyState !== WebSocket.OPEN) return;
             
             const rect = screenImg.getBoundingClientRect();
-            const scaleX = screenImg.naturalWidth / rect.width;
-            const scaleY = screenImg.naturalHeight / rect.height;
             
-            const x = (e.clientX - rect.left) * scaleX;
-            const y = (e.clientY - rect.top) * scaleY;
+            // Calculate relative coordinates (0.0 to 1.0)
+            const x = (e.clientX - rect.left) / rect.width;
+            const y = (e.clientY - rect.top) / rect.height;
             
             ws.send(JSON.stringify({
                 type: 'tap',
@@ -223,15 +222,19 @@
             
             if (diffX > 10 || diffY > 10) { // It's a swipe
                 const rect = screenImg.getBoundingClientRect();
-                const scaleX = screenImg.naturalWidth / rect.width;
-                const scaleY = screenImg.naturalHeight / rect.height;
+                
+                // Calculate relative coordinates (0.0 to 1.0)
+                const x1 = (startX - rect.left) / rect.width;
+                const y1 = (startY - rect.top) / rect.height;
+                const x2 = (e.clientX - rect.left) / rect.width;
+                const y2 = (e.clientY - rect.top) / rect.height;
                 
                 ws.send(JSON.stringify({
                     type: 'swipe',
-                    x1: (startX - rect.left) * scaleX,
-                    y1: (startY - rect.top) * scaleY,
-                    x2: (e.clientX - rect.left) * scaleX,
-                    y2: (e.clientY - rect.top) * scaleY,
+                    x1: x1,
+                    y1: y1,
+                    x2: x2,
+                    y2: y2,
                     duration: 300
                 }));
             }

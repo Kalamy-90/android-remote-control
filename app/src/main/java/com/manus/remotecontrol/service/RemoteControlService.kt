@@ -122,9 +122,10 @@ class RemoteControlService : Service() {
         val metrics = DisplayMetrics()
         windowManager.defaultDisplay.getRealMetrics(metrics)
         
-        // Scale down drastically for performance and network speed
-        val width = metrics.widthPixels / 4
-        val height = metrics.heightPixels / 4
+        // Scale down by 2 instead of 4 for better quality (e.g. 1080p -> 540p)
+        // This should be a good balance between performance and readability
+        val width = metrics.widthPixels / 2
+        val height = metrics.heightPixels / 2
         val density = metrics.densityDpi
 
         imageReader = ImageReader.newInstance(width, height, PixelFormat.RGBA_8888, 2)
@@ -153,7 +154,8 @@ class RemoteControlService : Service() {
                 val finalBitmap = if (rowPadding == 0) bitmap else Bitmap.createBitmap(bitmap, 0, 0, width, height)
                 
                 val stream = ByteArrayOutputStream()
-                finalBitmap.compress(Bitmap.CompressFormat.JPEG, 40, stream)
+                // Increase JPEG quality to 60% for better text readability
+                finalBitmap.compress(Bitmap.CompressFormat.JPEG, 60, stream)
                 val bytes = stream.toByteArray()
                 
                 serviceScope.launch {
