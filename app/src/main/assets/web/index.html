@@ -94,6 +94,21 @@
             z-index: 10;
         }
         
+        #quality-selector {
+            margin-top: 10px;
+            display: flex;
+            gap: 10px;
+            align-items: center;
+        }
+        
+        select {
+            padding: 5px;
+            border-radius: 5px;
+            background-color: #333;
+            color: white;
+            border: 1px solid #555;
+        }
+        
         /* Fullscreen specific styles */
         #screen-container:fullscreen {
             width: 100vw;
@@ -104,6 +119,7 @@
             display: flex;
             justify-content: center;
             align-items: center;
+            background-color: black;
         }
         
         #screen-container:fullscreen #remote-screen {
@@ -127,6 +143,15 @@
     </div>
 
     <div id="control-screen">
+        <div id="quality-selector">
+            <label for="quality">Qualité:</label>
+            <select id="quality" onchange="changeQuality()">
+                <option value="low">Fluide (Basse Résolution)</option>
+                <option value="medium" selected>Équilibré (Moyenne)</option>
+                <option value="high">Haute Qualité (HD)</option>
+            </select>
+        </div>
+
         <div id="screen-container">
             <button id="fullscreen-btn" onclick="toggleFullscreen()">⛶</button>
             <img id="remote-screen" src="" alt="Écran distant">
@@ -230,6 +255,32 @@
             }
         }
 
+        function changeQuality() {
+            const quality = document.getElementById('quality').value;
+            let scale = 3;
+            let jpegQuality = 50;
+
+            if (quality === 'low') {
+                scale = 4;
+                jpegQuality = 40;
+            } else if (quality === 'medium') {
+                scale = 3;
+                jpegQuality = 50;
+            } else if (quality === 'high') {
+                scale = 2;
+                jpegQuality = 65;
+            }
+
+            if (ws && ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({
+                    type: 'quality',
+                    scale: scale,
+                    quality: jpegQuality
+                }));
+                log(`Changement qualité: ${quality} (1/${scale}, ${jpegQuality}%)`);
+            }
+        }
+
         function toggleFullscreen() {
             if (!document.fullscreenElement) {
                 screenContainer.requestFullscreen().catch(err => {
@@ -247,6 +298,10 @@
                 screenImg.style.maxHeight = "80vh";
                 screenImg.style.width = "auto";
                 screenImg.style.height = "auto";
+                screenContainer.style.width = "";
+                screenContainer.style.height = "";
+                screenContainer.style.margin = "20px 0 0 0";
+                screenContainer.style.border = "2px solid #333";
             } else {
                 // Entering fullscreen is handled by CSS :fullscreen pseudo-class
             }

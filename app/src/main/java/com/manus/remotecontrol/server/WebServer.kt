@@ -107,6 +107,15 @@ class WebServer(
         try {
             val json = JSONObject(jsonStr)
             val type = json.optString("type")
+            
+            // Handle quality update command first (doesn't need AccessibilityService)
+            if (type == "quality") {
+                val scale = json.optInt("scale", 3)
+                val quality = json.optInt("quality", 50)
+                remoteControlService.updateQuality(scale, quality)
+                return
+            }
+
             val service = AccessibilityInputService.instance ?: return
 
             // Get screen dimensions for relative coordinate conversion

@@ -57,6 +57,12 @@ class RemoteControlService : Service() {
     private val _jpegFlow = MutableSharedFlow<ByteArray>(replay = 0)
     val jpegFlow = _jpegFlow.asSharedFlow()
 
+    // Default settings
+    private var currentScale = 3 // 1/3 resolution
+    private var currentQuality = 50 // 50% JPEG quality
+    private var savedResultCode: Int = 0
+    private var savedResultData: Intent? = null
+
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -68,6 +74,8 @@ class RemoteControlService : Service() {
                 val resultCode = intent.getIntExtra(EXTRA_RESULT_CODE, 0)
                 val resultData = intent.getParcelableExtra<Intent>(EXTRA_RESULT_DATA)
                 if (resultCode != 0 && resultData != null) {
+                    savedResultCode = resultCode
+                    savedResultData = resultData
                     try {
                         startProjection(resultCode, resultData)
                         startServer()
@@ -114,18 +122,23 @@ class RemoteControlService : Service() {
     }
 
     private fun startProjection(resultCode: Int, resultData: Intent) {
-        AppLogger.log("RemoteControlService", "Starting MediaProjection")
+        AppLogger.log("RemoteControlService", "Starting MediaProjection (Scale: 1/$currentScale, Quality: $currentQuality%)")
+        
+        // Clean up previous projection if exists
+        virtualDisplay?.release()
+        imageReader?.close()
+        
         val mpManager = getSystemService(MEDIA_PROJECTION_SERVICE) as MediaProjectionManager
-        mediaProjection = mpManager.getMediaProjection(resultCode, resultData)
+        if (mediaProjection == null) {
+            mediaProjection = mpManager.getMediaProjection(resultCode, resultData)
+        }
 
         val windowManager = getSystemService(WINDOW_SERVICE) as WindowManager
         val metrics = DisplayMetrics()
         windowManager.defaultDisplay.getRealMetrics(metrics)
         
-        // Scale down by 3 for better performance (e.g. 1080p -> 360p)
-        // This is a compromise between 1/4 (too blurry) and 1/2 (too slow)
-        val width = metrics.widthPixels / 3
-        val height = metrics.heightPixels / 3
+        val width = metrics.widthPixels / currentScale
+        val height = metrics.heightPixels / currentScale
         val density = metrics.densityDpi
 
         imageReader = ImageReader.newInstance(width, height, PixelFormat.RGBA_8888, 2)
@@ -139,34 +152,50 @@ class RemoteControlService : Service() {
         )
 
         imageReader?.setOnImageAvailableListener({ reader ->
-            val image = reader.acquireLatestImage()
-            if (image != null) {
-                val planes = image.planes
-                val buffer = planes[0].buffer
-                val pixelStride = planes[0].pixelStride
-                val rowStride = planes[0].rowStride
-                val rowPadding = rowStride - pixelStride * width
-                
-                val bitmap = Bitmap.createBitmap(width + rowPadding / pixelStride, height, Bitmap.Config.ARGB_8888)
-                bitmap.copyPixelsFromBuffer(buffer)
-                
-                // Crop if necessary and compress
-                val finalBitmap = if (rowPadding == 0) bitmap else Bitmap.createBitmap(bitmap, 0, 0, width, height)
-                
-                val stream = ByteArrayOutputStream()
-                // Use 50% quality for balance
-                finalBitmap.compress(Bitmap.CompressFormat.JPEG, 50, stream)
-                val bytes = stream.toByteArray()
-                
-                serviceScope.launch {
-                    _jpegFlow.emit(bytes)
+            try {
+                val image = reader.acquireLatestImage()
+                if (image != null) {
+                    val planes = image.planes
+                    val buffer = planes[0].buffer
+                    val pixelStride = planes[0].pixelStride
+                    val rowStride = planes[0].rowStride
+                    val rowPadding = rowStride - pixelStride * width
+                    
+                    val bitmap = Bitmap.createBitmap(width + rowPadding / pixelStride, height, Bitmap.Config.ARGB_8888)
+                    bitmap.copyPixelsFromBuffer(buffer)
+                    
+                    // Crop if necessary and compress
+                    val finalBitmap = if (rowPadding == 0) bitmap else Bitmap.createBitmap(bitmap, 0, 0, width, height)
+                    
+                    val stream = ByteArrayOutputStream()
+                    finalBitmap.compress(Bitmap.CompressFormat.JPEG, currentQuality, stream)
+                    val bytes = stream.toByteArray()
+                    
+                    serviceScope.launch {
+                        _jpegFlow.emit(bytes)
+                    }
+                    
+                    if (finalBitmap != bitmap) finalBitmap.recycle()
+                    bitmap.recycle()
+                    image.close()
                 }
-                
-                if (finalBitmap != bitmap) finalBitmap.recycle()
-                bitmap.recycle()
-                image.close()
+            } catch (e: Exception) {
+                Log.e("RemoteControlService", "Error processing image", e)
             }
         }, null)
+    }
+
+    fun updateQuality(scale: Int, quality: Int) {
+        if (savedResultCode != 0 && savedResultData != null) {
+            currentScale = scale
+            currentQuality = quality
+            // Restart projection with new settings
+            // We need to run this on main thread or handle concurrency carefully
+            // For simplicity, we just call startProjection again which cleans up old one
+            serviceScope.launch(Dispatchers.Main) {
+                startProjection(savedResultCode, savedResultData!!)
+            }
+        }
     }
 
     private fun startServer() {
