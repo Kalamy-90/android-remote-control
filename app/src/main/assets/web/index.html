@@ -83,8 +83,10 @@
     <div id="login-screen">
         <h1>Connexion Sécurisée</h1>
         <input type="password" id="pin-input" placeholder="Entrez le PIN affiché sur le téléphone" maxlength="4">
-        <button onclick="connect()">Connexion</button>
+        <button id="btn-connect" onclick="connect()">Connexion</button>
+        <p id="status-msg" style="color: yellow; display: none;">Connexion en cours...</p>
         <p id="error-msg" style="color: red; display: none;">Erreur de connexion</p>
+        <div id="debug-log" style="margin-top: 20px; font-size: 12px; color: #888; text-align: left; width: 80%; max-height: 100px; overflow-y: auto; border: 1px solid #333; padding: 5px;"></div>
     </div>
 
     <div id="control-screen">
@@ -104,18 +106,53 @@
         const screenImg = document.getElementById('remote-screen');
         const screenContainer = document.getElementById('screen-container');
 
+        function log(msg) {
+            const logDiv = document.getElementById('debug-log');
+            logDiv.innerHTML += `<div>${new Date().toLocaleTimeString()} - ${msg}</div>`;
+            logDiv.scrollTop = logDiv.scrollHeight;
+            console.log(msg);
+        }
+
         function connect() {
             const pin = document.getElementById('pin-input').value;
+            if (!pin) {
+                alert("Veuillez entrer le PIN");
+                return;
+            }
+
+            document.getElementById('btn-connect').disabled = true;
+            document.getElementById('status-msg').style.display = 'block';
+            document.getElementById('error-msg').style.display = 'none';
+            log("Tentative de connexion...");
+
             const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-            ws = new WebSocket(`${protocol}//${window.location.host}/control`);
+            const wsUrl = `${protocol}//${window.location.host}/control`;
+            log(`Connecting to ${wsUrl}`);
+            
+            try {
+                ws = new WebSocket(wsUrl);
+            } catch (e) {
+                log(`Erreur création WebSocket: ${e.message}`);
+                resetUI();
+                return;
+            }
 
             ws.onopen = () => {
+                log("WebSocket ouvert, envoi du PIN...");
                 ws.send(JSON.stringify({ pin: pin }));
+            };
+
+            ws.onerror = (error) => {
+                log("Erreur WebSocket (voir console)");
+                console.error(error);
+                document.getElementById('error-msg').innerText = "Erreur réseau WebSocket";
+                document.getElementById('error-msg').style.display = 'block';
+                resetUI();
             };
 
             ws.onmessage = (event) => {
                 if (typeof event.data === 'string') {
-                    // Control messages if any
+                    log(`Message reçu: ${event.data}`);
                 } else {
                     // Binary data = Image frame
                     const blob = event.data;
@@ -124,6 +161,7 @@
                     screenImg.src = url;
                     
                     if (document.getElementById('login-screen').style.display !== 'none') {
+                        log("Premier frame reçu, affichage écran");
                         document.getElementById('login-screen').style.display = 'none';
                         document.getElementById('control-screen').style.display = 'flex';
                     }
@@ -131,14 +169,21 @@
             };
 
             ws.onclose = (event) => {
+                log(`WebSocket fermé: code=${event.code}, reason=${event.reason}`);
                 if (event.code === 1008) { // Policy Violation (Wrong PIN)
                     document.getElementById('error-msg').innerText = "PIN Incorrect";
                     document.getElementById('error-msg').style.display = 'block';
-                } else {
+                } else if (document.getElementById('control-screen').style.display === 'flex') {
                     alert("Connexion perdue");
                     location.reload();
                 }
+                resetUI();
             };
+        }
+
+        function resetUI() {
+            document.getElementById('btn-connect').disabled = false;
+            document.getElementById('status-msg').style.display = 'none';
         }
 
         function sendKey(code) {
