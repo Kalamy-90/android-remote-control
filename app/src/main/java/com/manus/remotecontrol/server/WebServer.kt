@@ -138,9 +138,10 @@ class WebServer(
                     remoteControlService.updatePhotoSettings(scale, quality)
                 }
                 "video_settings" -> {
-                    val bitrate = json.optInt("bitrate", 2000000)
+                    val bitrate = json.optInt("bitrate", 1000000)
                     val fps = json.optInt("fps", 30)
-                    remoteControlService.updateVideoSettings(bitrate, fps)
+                    val scale = json.optDouble("scale", 0.5).toFloat()
+                    remoteControlService.updateVideoSettings(bitrate, fps, scale)
                 }
                 else -> {
                     // Input events

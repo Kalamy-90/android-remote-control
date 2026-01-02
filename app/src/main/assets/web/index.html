@@ -188,9 +188,9 @@
             
             <div id="video-settings" style="display: none;">
                 <select id="video-quality" onchange="updateVideoSettings()">
-                    <option value="low">Bas (1 Mbps)</option>
-                    <option value="medium" selected>Moyen (2.5 Mbps)</option>
-                    <option value="high">Élevé (5 Mbps)</option>
+                    <option value="low" selected>Fluide (540p / 1Mbps)</option>
+                    <option value="medium">Équilibré (720p / 2Mbps)</option>
+                    <option value="high">HD (1080p / 4Mbps)</option>
                 </select>
                 <select id="video-fps" onchange="updateVideoSettings()">
                     <option value="30" selected>30 FPS</option>
@@ -240,12 +240,13 @@
             document.getElementById('error-msg').style.display = 'none';
             log("Tentative de connexion...");
 
-            // Initialize JMuxer
+            // Initialize JMuxer with optimized buffer settings
             if (jmuxer) jmuxer.destroy();
             jmuxer = new JMuxer({
                 node: 'remote-video',
                 mode: 'video',
-                flushingTime: 0,
+                flushingTime: 0, // Immediate flushing for low latency
+                clearBuffer: true, // Clear buffer on new data to prevent lag accumulation
                 fps: 30,
                 debug: false
             });
@@ -375,17 +376,27 @@
         function updateVideoSettings() {
             const q = document.getElementById('video-quality').value;
             const fps = parseInt(document.getElementById('video-fps').value);
-            let bitrate = 2500000;
+            
+            let bitrate = 1000000;
+            let scale = 0.5; // Default 540p approx
 
-            if (q === 'low') bitrate = 1000000;
-            else if (q === 'medium') bitrate = 2500000;
-            else if (q === 'high') bitrate = 5000000;
+            if (q === 'low') { 
+                bitrate = 1000000; // 1 Mbps
+                scale = 0.4;       // ~432p/540p
+            } else if (q === 'medium') { 
+                bitrate = 2000000; // 2 Mbps
+                scale = 0.6;       // ~720p
+            } else if (q === 'high') { 
+                bitrate = 4000000; // 4 Mbps
+                scale = 1.0;       // 1080p+
+            }
 
             if (ws && ws.readyState === WebSocket.OPEN) {
                 ws.send(JSON.stringify({
                     type: 'video_settings',
                     bitrate: bitrate,
-                    fps: fps
+                    fps: fps,
+                    scale: scale
                 }));
             }
         }

@@ -86,8 +86,9 @@ class RemoteControlService : Service() {
     private var photoQuality = 50
     
     // Video Settings
-    private var videoBitrate = 2000000 // 2 Mbps
+    private var videoBitrate = 1000000 // 1 Mbps default
     private var videoFps = 30
+    private var videoScale = 0.5f // Default to half resolution for better performance
     
     private var savedResultCode: Int = 0
     private var savedResultData: Intent? = null
@@ -243,13 +244,21 @@ class RemoteControlService : Service() {
         val metrics = DisplayMetrics()
         windowManager.defaultDisplay.getRealMetrics(metrics)
         
+        // Apply scaling to video dimensions
+        var width = (metrics.widthPixels * videoScale).toInt()
+        var height = (metrics.heightPixels * videoScale).toInt()
+        
         // Video dimensions must be even
-        var width = metrics.widthPixels
-        var height = metrics.heightPixels
         if (width % 2 != 0) width--
         if (height % 2 != 0) height--
         
+        // Ensure minimum dimensions
+        width = width.coerceAtLeast(320)
+        height = height.coerceAtLeast(240)
+        
         val density = metrics.densityDpi
+        
+        AppLogger.log("RemoteControlService", "Starting Video: ${width}x${height} @ ${videoBitrate/1000}kbps ${videoFps}fps")
         
         try {
             val format = MediaFormat.createVideoFormat(MediaFormat.MIMETYPE_VIDEO_AVC, width, height)
@@ -257,6 +266,11 @@ class RemoteControlService : Service() {
             format.setInteger(MediaFormat.KEY_BIT_RATE, videoBitrate)
             format.setInteger(MediaFormat.KEY_FRAME_RATE, videoFps)
             format.setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 1)
+            
+            // Low latency settings if available
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                format.setInteger(MediaFormat.KEY_PRIORITY, 0) // Real-time priority
+            }
             
             mediaCodec = MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_VIDEO_AVC)
             mediaCodec?.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
@@ -347,10 +361,11 @@ class RemoteControlService : Service() {
         }
     }
     
-    fun updateVideoSettings(bitrate: Int, fps: Int) {
+    fun updateVideoSettings(bitrate: Int, fps: Int, scale: Float) {
         if (currentMode == Mode.VIDEO) {
             videoBitrate = bitrate
             videoFps = fps
+            videoScale = scale
             restartProjection()
         }
     }
