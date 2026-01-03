@@ -191,9 +191,9 @@
             
             <div id="video-settings" style="display: none;">
                 <select id="video-quality" onchange="updateVideoSettings()">
-                    <option value="low" selected>Fluide (540p / 1Mbps)</option>
-                    <option value="medium">Équilibré (720p / 2Mbps)</option>
-                    <option value="high">HD (1080p / 4Mbps)</option>
+                    <option value="low" selected>Fluide (480p / 800k)</option>
+                    <option value="medium">Équilibré (720p / 1.5M)</option>
+                    <option value="high">HD (1080p / 3M)</option>
                 </select>
                 <select id="video-fps" onchange="updateVideoSettings()">
                     <option value="30" selected>30 FPS</option>
@@ -380,17 +380,17 @@
             const q = document.getElementById('video-quality').value;
             const fps = parseInt(document.getElementById('video-fps').value);
             
-            let bitrate = 1000000;
-            let scale = 0.5; // Default 540p approx
+            let bitrate = 800000;
+            let scale = 0.4; // Default 480p approx
 
             if (q === 'low') { 
-                bitrate = 1000000; // 1 Mbps
-                scale = 0.4;       // ~432p/540p
+                bitrate = 800000;  // 800 Kbps
+                scale = 0.4;       // ~480p
             } else if (q === 'medium') { 
-                bitrate = 2000000; // 2 Mbps
+                bitrate = 1500000; // 1.5 Mbps
                 scale = 0.6;       // ~720p
             } else if (q === 'high') { 
-                bitrate = 4000000; // 4 Mbps
+                bitrate = 3000000; // 3 Mbps
                 scale = 1.0;       // 1080p+
             }
 
@@ -432,26 +432,60 @@
                 
                 const rect = element.getBoundingClientRect();
                 
-                // Check if click is within the actual image/video rect
-                if (x < rect.left || x > rect.right || y < rect.top || y > rect.bottom) return;
+                // Calculate actual image dimensions within the container (object-fit: contain)
+                let displayedWidth, displayedHeight, offsetX, offsetY;
+                
+                const elementRatio = element.videoWidth ? (element.videoWidth / element.videoHeight) : (element.naturalWidth / element.naturalHeight);
+                const containerRatio = rect.width / rect.height;
+                
+                if (!elementRatio) {
+                    // Fallback if dimensions not yet available
+                    displayedWidth = rect.width;
+                    displayedHeight = rect.height;
+                    offsetX = 0;
+                    offsetY = 0;
+                } else if (containerRatio > elementRatio) {
+                    // Container is wider than image -> black bars on sides
+                    displayedHeight = rect.height;
+                    displayedWidth = displayedHeight * elementRatio;
+                    offsetX = (rect.width - displayedWidth) / 2;
+                    offsetY = 0;
+                } else {
+                    // Container is taller than image -> black bars on top/bottom
+                    displayedWidth = rect.width;
+                    displayedHeight = displayedWidth / elementRatio;
+                    offsetX = 0;
+                    offsetY = (rect.height - displayedHeight) / 2;
+                }
+                
+                // Adjust coordinates relative to the actual image
+                const relativeX = x - rect.left - offsetX;
+                const relativeY = y - rect.top - offsetY;
+                
+                // Check if click is within the actual image
+                if (relativeX < 0 || relativeX > displayedWidth || relativeY < 0 || relativeY > displayedHeight) return;
 
                 const diffX = Math.abs(x - startX);
                 const diffY = Math.abs(y - startY);
 
                 if (diffX > 10 || diffY > 10) {
                     // Swipe
-                    const x1 = (startX - rect.left) / rect.width;
-                    const y1 = (startY - rect.top) / rect.height;
-                    const x2 = (x - rect.left) / rect.width;
-                    const y2 = (y - rect.top) / rect.height;
+                    // Calculate start coordinates relative to image too
+                    const startRelX = startX - rect.left - offsetX;
+                    const startRelY = startY - rect.top - offsetY;
+                    
+                    const x1 = startRelX / displayedWidth;
+                    const y1 = startRelY / displayedHeight;
+                    const x2 = relativeX / displayedWidth;
+                    const y2 = relativeY / displayedHeight;
                     
                     if (ws && ws.readyState === WebSocket.OPEN) {
                         ws.send(JSON.stringify({ type: 'swipe', x1, y1, x2, y2, duration: 300 }));
                     }
                 } else {
                     // Tap
-                    const tapX = (x - rect.left) / rect.width;
-                    const tapY = (y - rect.top) / rect.height;
+                    const tapX = relativeX / displayedWidth;
+                    const tapY = relativeY / displayedHeight;
                     
                     if (ws && ws.readyState === WebSocket.OPEN) {
                         ws.send(JSON.stringify({ type: 'tap', x: tapX, y: tapY }));

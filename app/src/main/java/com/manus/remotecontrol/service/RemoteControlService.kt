@@ -90,9 +90,9 @@ class RemoteControlService : Service() {
     private var photoQuality = 50
     
     // Video Settings
-    private var videoBitrate = 1000000 // 1 Mbps default
+    private var videoBitrate = 800000 // 800 Kbps default (Lowered for stability)
     private var videoFps = 30
-    private var videoScale = 0.5f // Default to half resolution for better performance
+    private var videoScale = 0.4f // Default to ~480p for better performance
     
     private var savedResultCode: Int = 0
     private var savedResultData: Intent? = null
@@ -271,9 +271,16 @@ class RemoteControlService : Service() {
             format.setInteger(MediaFormat.KEY_FRAME_RATE, videoFps)
             format.setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 1) // 1 second between I-frames
             
+            // Enforce CBR (Constant Bitrate) for consistent network usage
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+                format.setInteger(MediaFormat.KEY_BITRATE_MODE, MediaCodecInfo.EncoderCapabilities.BITRATE_MODE_CBR)
+            }
+            
             // Low latency settings if available
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
                 format.setInteger(MediaFormat.KEY_PRIORITY, 0) // Real-time priority
+                // Try to set operating rate higher than FPS to reduce latency
+                format.setFloat(MediaFormat.KEY_OPERATING_RATE, videoFps.toFloat() * 1.5f)
             }
             
             mediaCodec = MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_VIDEO_AVC)
