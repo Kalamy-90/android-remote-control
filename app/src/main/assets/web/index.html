@@ -212,6 +212,7 @@
             <button class="nav-btn" onclick="sendKey('BACK')">◀</button>
             <button class="nav-btn" onclick="sendKey('HOME')">●</button>
             <button class="nav-btn" onclick="sendKey('RECENTS')">■</button>
+            <button class="nav-btn" onclick="sendKey('LOCK')" style="background-color: #d32f2f;">🔒</button>
         </div>
     </div>
 
@@ -462,8 +463,9 @@
                 const relativeX = x - rect.left - offsetX;
                 const relativeY = y - rect.top - offsetY;
                 
-                // Check if click is within the actual image
-                if (relativeX < 0 || relativeX > displayedWidth || relativeY < 0 || relativeY > displayedHeight) return;
+                // Clamp coordinates to image bounds (fixes swipe from outside/edge)
+                const clampedX = Math.max(0, Math.min(relativeX, displayedWidth));
+                const clampedY = Math.max(0, Math.min(relativeY, displayedHeight));
 
                 const diffX = Math.abs(x - startX);
                 const diffY = Math.abs(y - startY);
@@ -474,21 +476,27 @@
                     const startRelX = startX - rect.left - offsetX;
                     const startRelY = startY - rect.top - offsetY;
                     
-                    const x1 = startRelX / displayedWidth;
-                    const y1 = startRelY / displayedHeight;
-                    const x2 = relativeX / displayedWidth;
-                    const y2 = relativeY / displayedHeight;
+                    // Clamp start coordinates too
+                    const clampedStartX = Math.max(0, Math.min(startRelX, displayedWidth));
+                    const clampedStartY = Math.max(0, Math.min(startRelY, displayedHeight));
+                    
+                    const x1 = clampedStartX / displayedWidth;
+                    const y1 = clampedStartY / displayedHeight;
+                    const x2 = clampedX / displayedWidth;
+                    const y2 = clampedY / displayedHeight;
                     
                     if (ws && ws.readyState === WebSocket.OPEN) {
                         ws.send(JSON.stringify({ type: 'swipe', x1, y1, x2, y2, duration: 300 }));
                     }
                 } else {
-                    // Tap
-                    const tapX = relativeX / displayedWidth;
-                    const tapY = relativeY / displayedHeight;
-                    
-                    if (ws && ws.readyState === WebSocket.OPEN) {
-                        ws.send(JSON.stringify({ type: 'tap', x: tapX, y: tapY }));
+                    // Tap - only if within bounds
+                    if (relativeX >= 0 && relativeX <= displayedWidth && relativeY >= 0 && relativeY <= displayedHeight) {
+                        const tapX = relativeX / displayedWidth;
+                        const tapY = relativeY / displayedHeight;
+                        
+                        if (ws && ws.readyState === WebSocket.OPEN) {
+                            ws.send(JSON.stringify({ type: 'tap', x: tapX, y: tapY }));
+                        }
                     }
                 }
                 startX = null;

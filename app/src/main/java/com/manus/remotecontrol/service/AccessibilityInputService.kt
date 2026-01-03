@@ -6,6 +6,7 @@ import android.content.Intent
 import android.graphics.Path
 import android.view.accessibility.AccessibilityEvent
 import android.util.Log
+import android.os.Build
 
 class AccessibilityInputService : AccessibilityService() {
 
@@ -69,5 +70,11 @@ class AccessibilityInputService : AccessibilityService() {
     
     fun performGlobalActionRecents() {
         performGlobalAction(GLOBAL_ACTION_RECENTS)
+    }
+    
+    fun performGlobalActionLockScreen() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            performGlobalAction(GLOBAL_ACTION_LOCK_SCREEN)
+        }
     }
 }

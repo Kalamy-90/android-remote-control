@@ -97,7 +97,7 @@ class WebServer(
                         
                         val videoJob = launch {
                             remoteControlService.h264Flow
-                                .buffer(Channel.UNLIMITED) // CRITICAL: Do NOT drop frames for H.264
+                                .buffer(Channel.UNLIMITED) // CRITICAL: Decouple encoder from network speed
                                 .collect { bytes ->
                                     try {
                                         // Prefix with 0x02 for Video
@@ -105,7 +105,9 @@ class WebServer(
                                         packet[0] = 0x02
                                         System.arraycopy(bytes, 0, packet, 1, bytes.size)
                                         send(Frame.Binary(true, packet))
-                                    } catch (e: Exception) {}
+                                    } catch (e: Exception) {
+                                        // Silent fail if network is slow, but DO NOT block the flow
+                                    }
                                 }
                         }
 
@@ -183,6 +185,7 @@ class WebServer(
                                 "BACK" -> service.performGlobalActionBack()
                                 "HOME" -> service.performGlobalActionHome()
                                 "RECENTS" -> service.performGlobalActionRecents()
+                                "LOCK" -> service.performGlobalActionLockScreen()
                             }
                         }
                     }

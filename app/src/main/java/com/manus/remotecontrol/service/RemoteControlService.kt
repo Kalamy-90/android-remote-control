@@ -31,6 +31,7 @@ import com.manus.remotecontrol.server.WebServer
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.launch
@@ -73,12 +74,21 @@ class RemoteControlService : Service() {
     private val serviceScope = CoroutineScope(Dispatchers.Default + Job())
     
     // Flow for Photo Mode (JPEG/WebP)
-    private val _imageFlow = MutableSharedFlow<ByteArray>(replay = 0)
+    private val _imageFlow = MutableSharedFlow<ByteArray>(
+        replay = 0,
+        extraBufferCapacity = 1,
+        onBufferOverflow = BufferOverflow.DROP_OLDEST
+    )
     val imageFlow = _imageFlow.asSharedFlow()
     
     // Flow for Video Mode (H.264)
     // Replay = 1 to ensure new subscribers get the latest header/frame immediately
-    private val _h264Flow = MutableSharedFlow<ByteArray>(replay = 1)
+    // DROP_OLDEST ensures the encoder is NEVER blocked by slow network consumers
+    private val _h264Flow = MutableSharedFlow<ByteArray>(
+        replay = 1,
+        extraBufferCapacity = 60, // Buffer up to 1-2 seconds of video
+        onBufferOverflow = BufferOverflow.DROP_OLDEST
+    )
     val h264Flow = _h264Flow.asSharedFlow()
 
     // Settings
@@ -233,9 +243,8 @@ class RemoteControlService : Service() {
                 finalBitmap.compress(format, photoQuality, outputStream)
                 val bytes = outputStream.toByteArray()
                 
-                serviceScope.launch {
-                    _imageFlow.emit(bytes)
-                }
+                // Use tryEmit to avoid blocking the UI thread
+                _imageFlow.tryEmit(bytes)
                 
             } catch (e: Exception) {
                 Log.e("RemoteControlService", "ImageReader error", e)
@@ -335,9 +344,11 @@ class RemoteControlService : Service() {
                                 val combined = ByteArray(spsPpsBuffer!!.size + data.size)
                                 System.arraycopy(spsPpsBuffer!!, 0, combined, 0, spsPpsBuffer!!.size)
                                 System.arraycopy(data, 0, combined, spsPpsBuffer!!.size, data.size)
-                                _h264Flow.emit(combined)
+                                // Use tryEmit to avoid blocking the encoder loop
+                                _h264Flow.tryEmit(combined)
                             } else {
-                                _h264Flow.emit(data)
+                                // Use tryEmit to avoid blocking the encoder loop
+                                _h264Flow.tryEmit(data)
                             }
                         }
                         
