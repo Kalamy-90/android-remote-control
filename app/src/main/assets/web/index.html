@@ -191,9 +191,9 @@
             
             <div id="video-settings" style="display: none;">
                 <select id="video-quality" onchange="updateVideoSettings()">
-                    <option value="low" selected>Fluide (480p / 800k)</option>
-                    <option value="medium">Équilibré (720p / 1.5M)</option>
-                    <option value="high">HD (1080p / 3M)</option>
+                    <option value="low">Fluide (480p / 1M)</option>
+                    <option value="medium" selected>Équilibré (720p / 3M)</option>
+                    <option value="high">HD (1080p / 6M)</option>
                 </select>
                 <select id="video-fps" onchange="updateVideoSettings()">
                     <option value="30" selected>30 FPS</option>
@@ -381,17 +381,17 @@
             const q = document.getElementById('video-quality').value;
             const fps = parseInt(document.getElementById('video-fps').value);
             
-            let bitrate = 800000;
+            let bitrate = 1000000;
             let scale = 0.4; // Default 480p approx
 
             if (q === 'low') { 
-                bitrate = 800000;  // 800 Kbps
+                bitrate = 1000000; // 1 Mbps
                 scale = 0.4;       // ~480p
             } else if (q === 'medium') { 
-                bitrate = 1500000; // 1.5 Mbps
+                bitrate = 3000000; // 3 Mbps
                 scale = 0.6;       // ~720p
             } else if (q === 'high') { 
-                bitrate = 3000000; // 3 Mbps
+                bitrate = 6000000; // 6 Mbps
                 scale = 1.0;       // 1080p+
             }
 
