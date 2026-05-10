@@ -19,8 +19,8 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.channels.consumeEach
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.conflate
-import kotlinx.coroutines.flow.buffer
-import kotlinx.coroutines.channels.Channel
+// import kotlinx.coroutines.flow.buffer
+// import kotlinx.coroutines.channels.Channel
 import org.json.JSONObject
 import java.io.File
 import java.util.concurrent.atomic.AtomicBoolean
@@ -78,42 +78,57 @@ class WebServer(
                             Log.d("WebServer", "Sent cached SPS/PPS headers to new client")
                         }
                         
-                        // Launch two parallel jobs for streaming
-                        // The client will only receive data from the active flow (Photo or Video)
-                        
+                        // Flags ACK : le client signale qu'il est prêt pour le frame suivant
+                        val photoAckReady = AtomicBoolean(true)
+                        val videoAckReady = AtomicBoolean(true)
+
+                        // Job Photo : n'envoie que si ACK reçu
                         val photoJob = launch {
                             remoteControlService.imageFlow
-                                .conflate() // Keep conflate for Photo mode (we only want the latest frame)
+                                .conflate()
                                 .collect { bytes ->
+                                    if (!photoAckReady.compareAndSet(true, false)) return@collect
                                     try {
-                                        // Prefix with 0x01 for Photo
                                         val packet = ByteArray(bytes.size + 1)
                                         packet[0] = 0x01
                                         System.arraycopy(bytes, 0, packet, 1, bytes.size)
                                         send(Frame.Binary(true, packet))
-                                    } catch (e: Exception) {}
+                                    } catch (e: Exception) {
+                                        photoAckReady.set(true)
+                                    }
                                 }
                         }
-                        
+
+                        // Job Vidéo : ACK sur les keyframes uniquement (les delta frames passent librement)
                         val videoJob = launch {
                             remoteControlService.h264Flow
-                                .buffer(Channel.UNLIMITED) // CRITICAL: Decouple encoder from network speed
                                 .collect { bytes ->
+                                    val isKeyframe = bytes.size > 5 &&
+                                        (bytes[4] == 0x67.toByte() || bytes[4] == 0x65.toByte())
+                                    if (isKeyframe) {
+                                        if (!videoAckReady.compareAndSet(true, false)) return@collect
+                                    }
                                     try {
-                                        // Prefix with 0x02 for Video
                                         val packet = ByteArray(bytes.size + 1)
                                         packet[0] = 0x02
                                         System.arraycopy(bytes, 0, packet, 1, bytes.size)
                                         send(Frame.Binary(true, packet))
                                     } catch (e: Exception) {
-                                        // Silent fail if network is slow, but DO NOT block the flow
+                                        videoAckReady.set(true)
                                     }
                                 }
                         }
 
+                        // Boucle réception : ACKs + commandes
                         incoming.consumeEach { frame ->
                             if (frame is Frame.Text) {
-                                handleCommand(frame.readText())
+                                val text = frame.readText()
+                                when (text) {
+                                    "ack_photo" -> photoAckReady.set(true)
+                                    "ack_video" -> videoAckReady.set(true)
+                                    "ack"       -> { photoAckReady.set(true); videoAckReady.set(true) } // rétro-compat
+                                    else        -> handleCommand(text)
+                                }
                             }
                         }
                         

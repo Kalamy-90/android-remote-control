@@ -86,7 +86,7 @@ class RemoteControlService : Service() {
     // DROP_OLDEST ensures the encoder is NEVER blocked by slow network consumers
     private val _h264Flow = MutableSharedFlow<ByteArray>(
         replay = 1,
-        extraBufferCapacity = 60, // Buffer up to 1-2 seconds of video
+        extraBufferCapacity = 2,          // <-- était 60
         onBufferOverflow = BufferOverflow.DROP_OLDEST
     )
     val h264Flow = _h264Flow.asSharedFlow()
@@ -109,6 +109,9 @@ class RemoteControlService : Service() {
     
     private var isEncoderRunning = false
     private var isImageReaderRunning = false
+
+    private var lastFrameTime = 0L
+    private val targetFrameInterval = 50L // 20 FPS max en mode photo
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -205,8 +208,16 @@ class RemoteControlService : Service() {
         )
         
         isImageReaderRunning = true
+        lastFrameTime = 0L
         
         imageReader?.setOnImageAvailableListener({ reader ->
+            val now = System.currentTimeMillis()
+            if (now - lastFrameTime < targetFrameInterval) {
+                reader.acquireLatestImage()?.close()
+                return@setOnImageAvailableListener
+            }
+            lastFrameTime = now
+            
             if (!isImageReaderRunning) return@setOnImageAvailableListener
             
             try {
@@ -292,6 +303,15 @@ class RemoteControlService : Service() {
                 format.setFloat(MediaFormat.KEY_OPERATING_RATE, videoFps.toFloat() * 1.5f)
             }
             
+            // Réduire le buffer interne encodeur (Android 10+)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                format.setInteger(MediaFormat.KEY_INTRA_REFRESH_PERIOD, videoFps)
+            }
+            // Mode latence minimale (Android 11+)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                format.setInteger(MediaFormat.KEY_LATENCY, 0)
+            }
+            
             mediaCodec = MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_VIDEO_AVC)
             mediaCodec?.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
             inputSurface = mediaCodec?.createInputSurface()
@@ -320,7 +340,7 @@ class RemoteControlService : Service() {
             
             while (isEncoderRunning && mediaCodec != null) {
                 try {
-                    val outputBufferId = mediaCodec?.dequeueOutputBuffer(bufferInfo, 10000) ?: -1
+                    val outputBufferId = mediaCodec?.dequeueOutputBuffer(bufferInfo, 5000) ?: -1
                     
                     if (outputBufferId >= 0) {
                         val outputBuffer = mediaCodec?.getOutputBuffer(outputBufferId)

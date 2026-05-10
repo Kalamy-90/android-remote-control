@@ -203,6 +203,7 @@
         </div>
 
         <div id="screen-container">
+            <span id="decoder-badge" style="position:absolute;top:10px;left:10px;background:rgba(0,150,100,0.7);color:white;padding:3px 8px;font-size:11px;border-radius:4px;z-index:10;pointer-events:none;display:none;"></span>
             <button id="fullscreen-btn" onclick="toggleFullscreen()">⛶</button>
             <img id="remote-image" src="" alt="Écran distant">
             <video id="remote-video" autoplay muted playsinline></video>
@@ -220,10 +221,84 @@
         let ws;
         let jmuxer;
         let currentMode = 'photo';
+        let videoDecoder     = null;
+        let remoteCanvas     = null;
+        let canvasCtx        = null;
+        let useVideoDecoder  = false;
+        let nextVideoTimestamp = 0;
         
         const imgEl = document.getElementById('remote-image');
         const videoEl = document.getElementById('remote-video');
         const screenContainer = document.getElementById('screen-container');
+
+        function supportsVideoDecoder() {
+            return typeof VideoDecoder !== 'undefined' &&
+                   typeof EncodedVideoChunk !== 'undefined';
+        }
+
+        function initVideoDecoder() {
+            if (!supportsVideoDecoder()) { useVideoDecoder = false; return false; }
+            if (!remoteCanvas) {
+                remoteCanvas = document.createElement('canvas');
+                remoteCanvas.id = 'remote-canvas';
+                remoteCanvas.style.cssText = 'max-height:80vh;display:none;max-width:100%;object-fit:contain;cursor:crosshair;';
+                document.getElementById('screen-container').insertBefore(remoteCanvas, document.getElementById('remote-video'));
+                attachInputListeners(remoteCanvas);
+            }
+            if (videoDecoder && videoDecoder.state !== 'closed') {
+                try { videoDecoder.close(); } catch(e) {}
+            }
+            nextVideoTimestamp = 0;
+            videoDecoder = new VideoDecoder({
+                output: (frame) => {
+                    if (remoteCanvas.width !== frame.displayWidth || remoteCanvas.height !== frame.displayHeight) {
+                        remoteCanvas.width = frame.displayWidth;
+                        remoteCanvas.height = frame.displayHeight;
+                        canvasCtx = remoteCanvas.getContext('2d');
+                    }
+                    canvasCtx.drawImage(frame, 0, 0);
+                    frame.close();
+                    if (ws && ws.readyState === WebSocket.OPEN) ws.send('ack_video');
+                },
+                error: (e) => {
+                    if (videoDecoder && videoDecoder.state !== 'closed') {
+                        try { videoDecoder.reset(); videoDecoder.configure({ codec: 'avc1.42E01E', optimizeForLatency: true }); } catch(_) {}
+                    }
+                }
+            });
+            try {
+                videoDecoder.configure({ codec: 'avc1.42E01E', optimizeForLatency: true });
+                useVideoDecoder = true;
+                document.getElementById('decoder-badge').textContent = '⚡ VideoDecoder natif';
+                document.getElementById('decoder-badge').style.display = 'block';
+                return true;
+            } catch(e) {
+                useVideoDecoder = false;
+                return false;
+            }
+        }
+
+        function decodeVideoChunk(payload) {
+            if (!useVideoDecoder || !videoDecoder) return;
+            let isKeyframe = false;
+            if (payload.length > 4) {
+                const nalType = payload[4] & 0x1F;
+                isKeyframe = (nalType === 5 || nalType === 7 || nalType === 8);
+            }
+            const timestamp = nextVideoTimestamp;
+            nextVideoTimestamp += 33333;
+            try {
+                if (videoDecoder.decodeQueueSize > 5 && !isKeyframe) return;
+                videoDecoder.decode(new EncodedVideoChunk({
+                    type: isKeyframe ? 'key' : 'delta',
+                    timestamp, duration: 33333, data: payload
+                }));
+            } catch(e) {
+                if (videoDecoder.state !== 'closed') {
+                    try { videoDecoder.reset(); videoDecoder.configure({ codec: 'avc1.42E01E', optimizeForLatency: true }); nextVideoTimestamp = 0; } catch(_) {}
+                }
+            }
+        }
 
         function log(msg) {
             const logDiv = document.getElementById('debug-log');
@@ -294,7 +369,11 @@
                         if (currentMode !== 'photo') return;
                         const blob = new Blob([payload], { type: 'image/webp' });
                         const url = URL.createObjectURL(blob);
-                        imgEl.onload = () => URL.revokeObjectURL(url);
+                        const oldUrl = imgEl.src;
+                        imgEl.onload = () => {
+                            URL.revokeObjectURL(oldUrl);
+                            if (ws && ws.readyState === WebSocket.OPEN) ws.send('ack_photo'); // ACK après rendu réel
+                        };
                         imgEl.src = url;
                         
                         if (document.getElementById('login-screen').style.display !== 'none') {
@@ -302,7 +381,12 @@
                         }
                     } else if (type === 0x02) { // Video
                         if (currentMode !== 'video') return;
-                        jmuxer.feed({ video: payload });
+                        if (useVideoDecoder) {
+                            decodeVideoChunk(payload);
+                        } else {
+                            if (jmuxer) jmuxer.feed({ video: payload });
+                            if (ws && ws.readyState === WebSocket.OPEN) ws.send('ack_video');
+                        }
                         
                         if (document.getElementById('login-screen').style.display !== 'none') {
                             showControlScreen();
@@ -346,8 +430,22 @@
             document.getElementById('video-settings').style.display = mode === 'video' ? 'block' : 'none';
             
             // Show/Hide elements
-            imgEl.style.display = mode === 'photo' ? 'block' : 'none';
-            videoEl.style.display = mode === 'video' ? 'block' : 'none';
+            if (mode === 'video') {
+                const ok = initVideoDecoder();
+                if (ok && remoteCanvas) {
+                    remoteCanvas.style.display = 'block';
+                    videoEl.style.display = 'none';
+                } else {
+                    if (remoteCanvas) remoteCanvas.style.display = 'none';
+                    videoEl.style.display = 'block';
+                }
+                imgEl.style.display = 'none';
+            } else {
+                if (remoteCanvas) remoteCanvas.style.display = 'none';
+                videoEl.style.display = 'none';
+                document.getElementById('decoder-badge').style.display = 'none';
+                imgEl.style.display = 'block';
+            }
             
             // Send command to server
             if (ws && ws.readyState === WebSocket.OPEN) {
